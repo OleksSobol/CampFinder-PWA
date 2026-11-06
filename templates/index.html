@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-slate-50">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>CampFinder - Open Campgrounds</title>
+  
+  <!-- PWA Meta -->
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#064e3b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="CampFinder">
+  <link rel="icon" type="image/svg+xml" href="/static/icons/icon.svg">
+  <link rel="apple-touch-icon" href="/static/icons/icon.svg">
+
+  <!-- Tailwind CSS & HTMX -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+
+  <!-- Leaflet CSS & JS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    /* Custom Leaflet Map styling */
+    #map {
+      height: 100%;
+      width: 100%;
+      z-index: 10;
+    }
+    .leaflet-popup-content-wrapper {
+      border-radius: 1rem;
+      padding: 0;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.15), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+    }
+    .leaflet-popup-content {
+      margin: 0;
+      line-height: 1.4;
+    }
+    .custom-tent-icon {
+      background: none;
+      border: none;
+    }
+    /* Pulse effect for user location */
+    @keyframes user-pulse {
+      0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7); }
+      70% { transform: scale(1); box-shadow: 0 0 0 14px rgba(59, 130, 246, 0); }
+      100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+    }
+    .user-gps-dot {
+      width: 18px;
+      height: 18px;
+      background: #2563eb;
+      border: 3px solid #ffffff;
+      border-radius: 50%;
+      animation: user-pulse 2s infinite;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+    }
+    .htmx-indicator {
+      display: none;
+    }
+    .htmx-request .htmx-indicator {
+      display: inline-flex;
+    }
+    .htmx-request.htmx-indicator {
+      display: inline-flex;
+    }
+  </style>
+</head>
+<body class="h-full flex flex-col overflow-hidden text-gray-800 antialiased select-none md:select-auto">
+
+  <!-- Top Navigation Bar -->
+  <header class="bg-emerald-900 text-white shadow-md z-30 shrink-0 px-4 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-2.5">
+      <div class="w-9 h-9 rounded-xl bg-emerald-800 border border-emerald-700/60 flex items-center justify-center p-1.5 shadow-inner">
+        <svg viewBox="0 0 512 512" class="w-full h-full fill-emerald-100">
+          <polygon points="256,60 70,390 442,390" fill="#f59e0b"/>
+          <polygon points="256,60 256,390 442,390" fill="#d97706"/>
+          <polygon points="256,120 180,390 332,390" fill="#78350f"/>
+        </svg>
+      </div>
+      <div>
+        <h1 class="font-extrabold text-lg tracking-tight leading-none flex items-center gap-2">
+          CampFinder
+          <span class="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-emerald-800 text-emerald-200 border border-emerald-700">PWA</span>
+        </h1>
+        <p class="text-xs text-emerald-200/80 leading-tight mt-0.5">Okanogan-Wenatchee Open Campsites</p>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-2">
+      <!-- Live Status / Refresh Trigger -->
+      <form hx-post="/refresh" hx-target="#refresh-status" hx-indicator="#refresh-spinner" class="m-0">
+        <button type="submit"
+                title="Sync campgrounds from Forest Service"
+                class="flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-emerald-800/80 hover:bg-emerald-700 text-emerald-100 border border-emerald-700/70 transition-all">
+          <svg id="refresh-spinner" class="htmx-indicator animate-spin -ml-0.5 mr-1 h-3.5 w-3.5 text-white" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+          <span id="refresh-status">Sync</span>
+        </button>
+      </form>
+
+      <!-- Install App Button (hidden until prompt available) -->
+      <button id="pwa-install-btn" class="hidden text-xs font-bold px-2.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white shadow-sm transition-all">
+        📲 Install
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Split Layout (Desktop: Side-by-side | Mobile: Map top, list bottom or toggleable) -->
+  <main class="flex-1 flex flex-col md:flex-row overflow-hidden relative">
+
+    <!-- Map Viewport -->
+    <div class="w-full md:w-3/5 lg:w-2/3 h-64 md:h-full relative shrink-0 order-1 md:order-2">
+      <div id="map"></div>
+
+      <!-- Floating Controls on Map -->
+      <div class="absolute top-3 left-3 z-[1000] flex flex-col gap-2">
+        <!-- Near Me Button -->
+        <button id="locate-me-btn" onclick="locateUser()"
+                class="flex items-center gap-1.5 bg-white hover:bg-slate-50 text-emerald-800 px-3 py-2 rounded-xl shadow-lg border border-slate-200 text-xs font-bold transition-transform active:scale-95">
+          <svg class="w-4 h-4 text-emerald-700" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z" clip-rule="evenodd" />
+          </svg>
+          <span id="locate-text">Find Near Me</span>
+        </button>
+      </div>
+
+      <!-- Recenter View Button -->
+      <div class="absolute bottom-4 right-4 z-[1000]">
+        <button onclick="resetMapView()"
+                class="bg-white/95 hover:bg-white text-gray-700 p-2.5 rounded-xl shadow-md border border-slate-200 transition-all"
+                title="Fit all campgrounds on map">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Side Panel / Bottom Drawer (List, Filters & Search) -->
+    <aside class="w-full md:w-2/5 lg:w-1/3 flex-1 md:h-full flex flex-col bg-slate-50 border-r border-slate-200 z-20 order-2 md:order-1 overflow-hidden shadow-lg md:shadow-none">
+      
+      <!-- Filter Bar -->
+      <div class="p-3 bg-white border-b border-slate-200 shrink-0 space-y-2.5">
+        
+        <!-- Search Input -->
+        <div class="relative">
+          <input type="text"
+                 id="search-input"
+                 name="q"
+                 placeholder="Search campground or district..."
+                 hx-get="/campgrounds"
+                 hx-target="#campground-list"
+                 hx-trigger="keyup changed delay:250ms, search"
+                 hx-include="#filter-form"
+                 class="w-full pl-9 pr-8 py-2 text-sm bg-slate-100 focus:bg-white border border-slate-200 focus:border-emerald-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-600/20 transition-all" />
+          <svg class="w-4 h-4 text-gray-400 absolute left-3 top-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+          </svg>
+        </div>
+
+        <!-- Hidden inputs for coordinates and current filter -->
+        <form id="filter-form" hx-get="/campgrounds" hx-target="#campground-list" hx-trigger="change" class="m-0">
+          <input type="hidden" name="lat" id="user-lat" value="">
+          <input type="hidden" name="lng" id="user-lng" value="">
+          <input type="hidden" name="q" id="sync-search-q" value="">
+
+          <!-- Filter Pills -->
+          <div class="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs font-semibold no-scrollbar">
+            <label class="cursor-pointer shrink-0">
+              <input type="radio" name="filter" value="all" class="peer hidden" checked>
+              <span class="px-3 py-1.5 rounded-lg border border-slate-200 peer-checked:bg-emerald-800 peer-checked:text-white peer-checked:border-emerald-800 text-gray-600 hover:bg-slate-100 transition-colors">
+                All ({{ campgrounds|length }})
+              </span>
+            </label>
+            <label class="cursor-pointer shrink-0">
+              <input type="radio" name="filter" value="free" class="peer hidden">
+              <span class="px-3 py-1.5 rounded-lg border border-slate-200 peer-checked:bg-emerald-800 peer-checked:text-white peer-checked:border-emerald-800 text-gray-600 hover:bg-slate-100 transition-colors">
+                🎁 Free Only
+              </span>
+            </label>
+            <label class="cursor-pointer shrink-0">
+              <input type="radio" name="filter" value="under15" class="peer hidden">
+              <span class="px-3 py-1.5 rounded-lg border border-slate-200 peer-checked:bg-emerald-800 peer-checked:text-white peer-checked:border-emerald-800 text-gray-600 hover:bg-slate-100 transition-colors">
+                ≤ $15
+              </span>
+            </label>
+            <label class="cursor-pointer shrink-0">
+              <input type="radio" name="filter" value="paid" class="peer hidden">
+              <span class="px-3 py-1.5 rounded-lg border border-slate-200 peer-checked:bg-emerald-800 peer-checked:text-white peer-checked:border-emerald-800 text-gray-600 hover:bg-slate-100 transition-colors">
+                Paid Sites
+              </span>
+            </label>
+          </div>
+        </form>
+      </div>
+
+      <!-- Scrollable Campground Cards List -->
+      <div id="campground-list" class="flex-1 overflow-y-auto p-3 space-y-3">
+        {% include "cards.html" %}
+      </div>
+
+    </aside>
+
+  </main>
+
+  <!-- Embed Scraped Data into client-side JS -->
+  <script id="initial-campground-data" type="application/json">
+    {{ campgrounds|tojson }}
+  </script>
+
+  <!-- App Logic: Leaflet + Geolocation + PWA Registration -->
+  <script>
+    // 1. Initialize Map
+    let map;
+    let markersLayer = L.layerGroup();
+    let userMarker = null;
+    let allCampgrounds = [];
+    let userCoords = null;
+
+    try {
+      const dataScript = document.getElementById('initial-campground-data');
+      if (dataScript) {
+        allCampgrounds = JSON.parse(dataScript.textContent);
+      }
+    } catch (e) {
+      console.error('Failed to parse initial campgrounds data:', e);
+    }
+
+    function initMap() {
+      // Okanogan-Wenatchee central coordinates
+      map = L.map('map', {
+        zoomControl: false,
+        attributionControl: true
+      }).setView([47.8, -120.6], 8);
+
+      // Add Zoom control on bottom-left for easier one-hand thumb access on mobile
+      L.control.zoom({ position: 'bottomleft' }).addTo(map);
+
+      // Clean OpenStreetMap tiles
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 18,
+        attribution: '&copy; OpenStreetMap contributors'
+      }).addTo(map);
+
+      markersLayer.addTo(map);
+      renderCampgroundMarkers(allCampgrounds);
+    }
+
+    // 2. Render Markers on Leaflet
+    function renderCampgroundMarkers(camps) {
+      markersLayer.clearLayers();
+      const bounds = [];
+
+      camps.forEach(camp => {
+        if (!camp.lat || !camp.lng) return;
+
+        bounds.push([camp.lat, camp.lng]);
+
+        // Custom Tent Marker with Price Badge
+        const isFree = camp.is_free;
+        const badgeColor = isFree ? '#047857' : '#d97706';
+        const badgeText = isFree ? 'FREE' : (camp.price_badge || '$');
+
+        const customIcon = L.divIcon({
+          className: 'custom-tent-icon',
+          iconSize: [36, 42],
+          iconAnchor: [18, 40],
+          popupAnchor: [0, -36],
+          html: `
+            <div style="position: relative; display: flex; flex-direction: column; align-items: center;">
+              <div style="background: ${badgeColor}; color: white; font-size: 10px; font-weight: 800; padding: 1px 5px; border-radius: 9999px; box-shadow: 0 2px 4px rgba(0,0,0,0.25); white-space: nowrap; margin-bottom: 2px;">
+                ${badgeText}
+              </div>
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="${badgeColor}" stroke="#ffffff" stroke-width="1.5">
+                <path d="M12 2L2 22h20L12 2z"/>
+                <path d="M12 6l-6 16h12L12 6z" fill="#ffffff" fill-opacity="0.3"/>
+              </svg>
+            </div>
+          `
+        });
+
+        const marker = L.marker([camp.lat, camp.lng], { icon: customIcon });
+
+        const popupContent = `
+          <div style="padding: 12px; max-width: 260px; font-family: sans-serif;">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px;">
+              <strong style="font-size: 14px; color: #111827;">${camp.name}</strong>
+              <span style="background: #ecfdf5; color: #047857; font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px;">${camp.status}</span>
+            </div>
+            <p style="font-size: 11px; color: #6b7280; margin: 0 0 6px 0;">${camp.district || 'Okanogan-Wenatchee'}</p>
+            <p style="font-size: 11px; color: #374151; margin: 0 0 8px 0;"><strong>Fee:</strong> ${camp.fee_text}</p>
+            <div style="display: flex; gap: 6px; margin-top: 8px;">
+              <a href="https://www.google.com/maps/dir/?api=1&destination=${camp.lat},${camp.lng}" target="_blank"
+                 style="flex: 1; text-align: center; background: #047857; color: white; text-decoration: none; font-size: 11px; font-weight: bold; padding: 6px 8px; border-radius: 6px;">
+                 Navigate ↗
+              </a>
+              <a href="${camp.url}" target="_blank"
+                 style="flex: 1; text-align: center; background: #f3f4f6; color: #374151; text-decoration: none; font-size: 11px; padding: 6px 8px; border-radius: 6px; border: 1px solid #e5e7eb;">
+                 USFS Info ↗
+              </a>
+            </div>
+          </div>
+        `;
+
+        marker.bindPopup(popupContent);
+        marker.campId = camp.id;
+        markersLayer.addLayer(marker);
+      });
+
+      if (bounds.length > 0 && !userCoords) {
+        map.fitBounds(bounds, { padding: [30, 30], maxZoom: 12 });
+      }
+    }
+
+    // 3. User Geolocation ("Near Me")
+    function locateUser() {
+      const btnText = document.getElementById('locate-text');
+      if (!navigator.geolocation) {
+        alert('Geolocation is not supported by your browser.');
+        return;
+      }
+
+      btnText.textContent = 'Locating...';
+
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const lat = pos.coords.latitude;
+          const lng = pos.coords.longitude;
+          userCoords = { lat, lng };
+
+          // Update hidden form fields so HTMX filters send user location
+          document.getElementById('user-lat').value = lat;
+          document.getElementById('user-lng').value = lng;
+
+          // Draw user location marker
+          if (userMarker) {
+            userMarker.setLatLng([lat, lng]);
+          } else {
+            const gpsIcon = L.divIcon({
+              className: 'custom-tent-icon',
+              html: '<div class="user-gps-dot" title="You are here"></div>',
+              iconSize: [20, 20],
+              iconAnchor: [10, 10]
+            });
+            userMarker = L.marker([lat, lng], { icon: gpsIcon, zIndexOffset: 1000 }).addTo(map);
+            userMarker.bindPopup('<strong style="font-size:12px;">You Are Here</strong>');
+          }
+
+          map.setView([lat, lng], 10, { animate: true });
+          btnText.textContent = 'Near Me ✓';
+
+          // Trigger HTMX refresh with GPS coordinates to sort cards by nearest
+          htmx.trigger('#filter-form', 'change');
+        },
+        (err) => {
+          console.warn('Geolocation error:', err);
+          btnText.textContent = 'GPS Unavailable';
+          setTimeout(() => { btnText.textContent = 'Find Near Me'; }, 3000);
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+      );
+    }
+
+    // 4. Reset Map View
+    function resetMapView() {
+      if (markersLayer.getLayers().length > 0) {
+        const group = L.featureGroup(markersLayer.getLayers());
+        if (userMarker) group.addLayer(userMarker);
+        map.fitBounds(group.getBounds(), { padding: [40, 40] });
+      } else {
+        map.setView([47.8, -120.6], 8);
+      }
+    }
+
+    // 5. Select Campground from Card
+    function selectCampground(lat, lng, name) {
+      map.setView([lat, lng], 13, { animate: true });
+      markersLayer.eachLayer(layer => {
+        const mLat = layer.getLatLng().lat;
+        const mLng = layer.getLatLng().lng;
+        if (Math.abs(mLat - lat) < 0.0001 && Math.abs(mLng - lng) < 0.0001) {
+          layer.openPopup();
+        }
+      });
+      // On mobile, scroll map into view smoothly
+      if (window.innerWidth < 768) {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    }
+
+    // Keep search input synced with filter form
+    document.getElementById('search-input').addEventListener('input', (e) => {
+      document.getElementById('sync-search-q').value = e.target.value;
+    });
+
+    // 6. HTMX Event: When cards are swapped, update markers if needed
+    document.body.addEventListener('htmx:afterSwap', function(evt) {
+      if (evt.detail.target.id === 'campground-list') {
+        // Can optionally filter map pins to match visible cards
+      }
+    });
+
+    // 7. PWA Service Worker Registration
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js')
+          .then(reg => console.log('ServiceWorker registered with scope:', reg.scope))
+          .catch(err => console.log('ServiceWorker registration failed:', err));
+      });
+    }
+
+    // 8. PWA Install Banner Support
+    let deferredPrompt;
+    const installBtn = document.getElementById('pwa-install-btn');
+
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      installBtn.classList.remove('hidden');
+    });
+
+    installBtn.addEventListener('click', async () => {
+      if (!deferredPrompt) return;
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      console.log(`User response to install prompt: ${outcome}`);
+      deferredPrompt = null;
+      installBtn.classList.add('hidden');
+    });
+
+    window.addEventListener('appinstalled', () => {
+      installBtn.classList.add('hidden');
+      console.log('CampFinder PWA was installed');
+    });
+
+    // Run on startup
+    window.addEventListener('DOMContentLoaded', initMap);
+  </script>
+</body>
+</html>

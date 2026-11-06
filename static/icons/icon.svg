@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#059669" />
+      <stop offset="100%" stop-color="#064e3b" />
+    </linearGradient>
+  </defs>
+  <!-- Background circle/rounded rect -->
+  <rect width="512" height="512" rx="100" fill="url(#grad)" />
+  <!-- Mountains in background -->
+  <polygon points="60,370 200,180 340,370" fill="#047857" opacity="0.7"/>
+  <polygon points="180,370 320,150 460,370" fill="#065f46" opacity="0.9"/>
+  <!-- Mountain Snow Caps -->
+  <polygon points="320,150 286,200 354,200" fill="#ecfdf5"/>
+  <!-- Main Camping Tent -->
+  <polygon points="256,230 140,410 372,410" fill="#f59e0b"/>
+  <!-- Tent Inner shadow / flap -->
+  <polygon points="256,230 256,410 372,410" fill="#d97706"/>
+  <polygon points="256,260 210,410 302,410" fill="#78350f"/>
+  <!-- Moon & Stars -->
+  <circle cx="390" cy="110" r="32" fill="#fef08a" />
+  <circle cx="376" cy="100" r="28" fill="#059669" />
+  <!-- Ground -->
+  <rect x="0" y="410" width="512" height="102" fill="#022c22" />
+</svg>
