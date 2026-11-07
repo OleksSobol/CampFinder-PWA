@@ -1,14 +1,11 @@
 version: '3.8'
-
 services:
   campfinder:
     build: .
-    container_name: campfinder-pwa
     restart: unless-stopped
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     volumes:
-      # Persist scraped data across container rebuilds
       - ./data:/app/data
     environment:
       - PORT=8000
