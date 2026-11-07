@@ -149,13 +149,19 @@
           </svg>
           <span id="locate-text">Find Near Me</span>
         </button>
+
+        <!-- Dynamic Map Count Badge -->
+        <div id="map-count-badge" class="bg-white/95 text-emerald-900 px-2.5 py-1.5 rounded-xl shadow-md border border-slate-200 text-[11px] font-bold flex items-center gap-1.5">
+          <span class="w-2 h-2 rounded-full bg-emerald-600 animate-pulse"></span>
+          <span id="map-count-text">{{ total_count }} campgrounds on map</span>
+        </div>
       </div>
 
       <!-- Recenter View Button -->
       <div class="absolute bottom-4 right-4 z-[1000]">
         <button onclick="resetMapView()"
                 class="bg-white/95 hover:bg-white text-gray-700 p-2.5 rounded-xl shadow-md border border-slate-200 transition-all"
-                title="Fit all campgrounds on map">
+                title="Fit campgrounds on map">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/>
           </svg>
@@ -235,15 +241,15 @@
     {{ map_campgrounds|tojson }}
   </script>
 
-  <!-- App Logic: Leaflet + MarkerCluster + Geolocation + PWA Registration -->
+  <!-- App Logic: Leaflet + MarkerCluster + Dynamic Filtering + Geolocation + PWA Registration -->
   <script>
-    // 1. Initialize Map
     let map;
     let markersLayer = null;
     let userMarker = null;
     let allCampgrounds = [];
     let markerMap = {};
     let userCoords = null;
+    let filterDebounceTimer = null;
 
     try {
       const dataScript = document.getElementById('initial-campground-data');
@@ -254,17 +260,15 @@
       console.error('Failed to parse initial campgrounds data:', e);
     }
 
+    // 1. Initialize Map
     function initMap() {
-      // Default view over the American West
       map = L.map('map', {
         zoomControl: false,
         attributionControl: true
       }).setView([42.5, -117.0], 5);
 
-      // Zoom control on bottom-left for comfortable mobile one-handed access
       L.control.zoom({ position: 'bottomleft' }).addTo(map);
 
-      // OpenStreetMap tiles
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 18,
         attribution: '&copy; OpenStreetMap contributors'
@@ -280,14 +284,71 @@
       });
 
       map.addLayer(markersLayer);
-      renderCampgroundMarkers(allCampgrounds);
+
+      // Render initial markers
+      applyFilters(false);
     }
 
-    // 2. Render Markers on Leaflet with Clustering
+    // 2. Client-side Filter Logic for Map
+    function filterCampgroundsClient(camps, filterType, query) {
+      let filtered = camps;
+
+      // Text Search Filter across Name, District, Town, Region, Fee Info
+      if (query && query.trim()) {
+        const q = query.toLowerCase().trim();
+        filtered = filtered.filter(c => {
+          const text = `${c.name || ''} ${c.district || ''} ${c.town || ''} ${c.region || ''} ${c.fee_text || ''}`.toLowerCase();
+          return text.includes(q);
+        });
+      }
+
+      // Price / Type Filter
+      if (filterType === 'free') {
+        filtered = filtered.filter(c => c.is_free);
+      } else if (filterType === 'paid') {
+        filtered = filtered.filter(c => !c.is_free);
+      } else if (filterType === 'under15') {
+        filtered = filtered.filter(c => {
+          if (c.is_free) return true;
+          const prices = (c.price_badge || '').match(/\$(\d+)/);
+          return prices && parseInt(prices[1], 10) <= 15;
+        });
+      }
+
+      return filtered;
+    }
+
+    // 3. Apply Filters to Map Markers
+    function applyFilters(autoZoom = false) {
+      const query = document.getElementById('search-input')?.value || '';
+      const filterType = document.querySelector('input[name="filter"]:checked')?.value || 'all';
+
+      const filtered = filterCampgroundsClient(allCampgrounds, filterType, query);
+      renderCampgroundMarkers(filtered);
+
+      // Update Map Count Badge
+      const countText = document.getElementById('map-count-text');
+      if (countText) {
+        countText.textContent = `${filtered.length.toLocaleString()} campground${filtered.length === 1 ? '' : 's'} on map`;
+      }
+
+      // Auto-zoom map if a specific search was typed (3+ characters) or requested
+      if (autoZoom && filtered.length > 0) {
+        const bounds = filtered.map(c => [c.lat, c.lng]);
+        if (bounds.length === 1) {
+          map.setView(bounds[0], 12);
+        } else {
+          map.fitBounds(bounds, { padding: [50, 50], maxZoom: 12 });
+        }
+      }
+    }
+
+    // 4. Render Markers into MarkerClusterGroup
     function renderCampgroundMarkers(camps) {
       if (!markersLayer) return;
       markersLayer.clearLayers();
       markerMap = {};
+      const markers = [];
 
       camps.forEach(camp => {
         if (!camp.lat || !camp.lng) return;
@@ -349,11 +410,18 @@
         marker.campId = camp.id;
         const key = `${camp.lat.toFixed(5)},${camp.lng.toFixed(5)}`;
         markerMap[key] = marker;
-        markersLayer.addLayer(marker);
+        markers.push(marker);
       });
+
+      // Bulk add for maximum performance
+      if (markersLayer.addLayers) {
+        markersLayer.addLayers(markers);
+      } else {
+        markers.forEach(m => markersLayer.addLayer(m));
+      }
     }
 
-    // 3. User Geolocation ("Near Me")
+    // 5. User Geolocation ("Near Me")
     function locateUser() {
       const btnText = document.getElementById('locate-text');
       if (!navigator.geolocation) {
@@ -369,11 +437,9 @@
           const lng = pos.coords.longitude;
           userCoords = { lat, lng };
 
-          // Update hidden form fields so HTMX filters send user location
           document.getElementById('user-lat').value = lat;
           document.getElementById('user-lng').value = lng;
 
-          // Draw user location marker
           if (userMarker) {
             userMarker.setLatLng([lat, lng]);
           } else {
@@ -402,16 +468,21 @@
       );
     }
 
-    // 4. Reset Map View
+    // 6. Reset Map View
     function resetMapView() {
-      if (markersLayer && markersLayer.getLayers().length > 0) {
-        map.setView([42.5, -117.0], 5);
+      const query = document.getElementById('search-input')?.value || '';
+      const filterType = document.querySelector('input[name="filter"]:checked')?.value || 'all';
+      const filtered = filterCampgroundsClient(allCampgrounds, filterType, query);
+
+      if (filtered.length > 0 && (query || filterType !== 'all')) {
+        const bounds = filtered.map(c => [c.lat, c.lng]);
+        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 12 });
       } else {
         map.setView([42.5, -117.0], 5);
       }
     }
 
-    // 5. Select Campground from Card
+    // 7. Select Campground from Card
     function selectCampground(lat, lng, name) {
       const key = `${lat.toFixed(5)},${lng.toFixed(5)}`;
       const marker = markerMap[key];
@@ -424,18 +495,32 @@
         if (marker) marker.openPopup();
       }
 
-      // On mobile, scroll map into view smoothly
       if (window.innerWidth < 768) {
         window.scrollTo({ top: 0, behavior: 'smooth' });
       }
     }
 
-    // Keep search input synced with filter form
-    document.getElementById('search-input').addEventListener('input', (e) => {
-      document.getElementById('sync-search-q').value = e.target.value;
+    // 8. Event Listeners for Dynamic Filter & Search Sync
+    // Filter radio pill changes
+    document.getElementById('filter-form').addEventListener('change', () => {
+      applyFilters(false);
     });
 
-    // 6. PWA Service Worker Registration
+    document.querySelectorAll('input[name="filter"]').forEach(input => {
+      input.addEventListener('change', () => applyFilters(false));
+    });
+
+    // Search input changes (debounced with auto-zoom on 3+ characters)
+    document.getElementById('search-input').addEventListener('input', (e) => {
+      document.getElementById('sync-search-q').value = e.target.value;
+      clearTimeout(filterDebounceTimer);
+      filterDebounceTimer = setTimeout(() => {
+        const shouldZoom = e.target.value.trim().length >= 3;
+        applyFilters(shouldZoom);
+      }, 200);
+    });
+
+    // 9. PWA Service Worker Registration
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('/sw.js')
@@ -444,7 +529,7 @@
       });
     }
 
-    // 7. PWA Install Banner Support
+    // 10. PWA Install Banner Support
     let deferredPrompt;
     const installBtn = document.getElementById('pwa-install-btn');
 
