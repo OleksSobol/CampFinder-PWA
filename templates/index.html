@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>CampFinder - Open Campgrounds</title>
+  <title>CampFinder - US West Open Campgrounds</title>
   
   <!-- PWA Meta -->
   <link rel="manifest" href="/manifest.json">
@@ -16,13 +16,16 @@
 
   <!-- Tailwind CSS & HTMX -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <!--TODO: WHY SO OLD -->
-  <!-- Replace it with HTMX 4 -->
   <script src="https://unpkg.com/htmx.org@1.9.10"></script>
 
   <!-- Leaflet CSS & JS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Leaflet MarkerCluster -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 
   <style>
     /* Custom Leaflet Map styling */
@@ -43,6 +46,23 @@
     .custom-tent-icon {
       background: none;
       border: none;
+    }
+    /* Emerald Marker Clusters */
+    .marker-cluster-small, .marker-cluster-medium, .marker-cluster-large {
+      background-color: rgba(6, 78, 59, 0.45) !important;
+      border-radius: 50% !important;
+    }
+    .marker-cluster-small div, .marker-cluster-medium div, .marker-cluster-large div {
+      background-color: #064e3b !important;
+      color: #ecfdf5 !important;
+      font-weight: 800 !important;
+      font-size: 11px !important;
+      font-family: inherit !important;
+      border-radius: 50% !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3) !important;
     }
     /* Pulse effect for user location */
     @keyframes user-pulse {
@@ -87,7 +107,7 @@
           CampFinder
           <span class="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-emerald-800 text-emerald-200 border border-emerald-700">PWA</span>
         </h1>
-        <p class="text-xs text-emerald-200/80 leading-tight mt-0.5">Okanogan-Wenatchee Open Campsites</p>
+        <p class="text-xs text-emerald-200/80 leading-tight mt-0.5">US West Campsites ({{ total_count }} total)</p>
       </div>
     </div>
 
@@ -154,7 +174,7 @@
           <input type="text"
                  id="search-input"
                  name="q"
-                 placeholder="Search campground or district..."
+                 placeholder="Search name, region, state or district..."
                  hx-get="/campgrounds"
                  hx-target="#campground-list"
                  hx-trigger="keyup changed delay:250ms, search"
@@ -176,7 +196,7 @@
             <label class="cursor-pointer shrink-0">
               <input type="radio" name="filter" value="all" class="peer hidden" checked>
               <span class="px-3 py-1.5 rounded-lg border border-slate-200 peer-checked:bg-emerald-800 peer-checked:text-white peer-checked:border-emerald-800 text-gray-600 hover:bg-slate-100 transition-colors">
-                All ({{ campgrounds|length }})
+                All ({{ total_count }})
               </span>
             </label>
             <label class="cursor-pointer shrink-0">
@@ -212,16 +232,17 @@
 
   <!-- Embed Scraped Data into client-side JS -->
   <script id="initial-campground-data" type="application/json">
-    {{ campgrounds|tojson }}
+    {{ map_campgrounds|tojson }}
   </script>
 
-  <!-- App Logic: Leaflet + Geolocation + PWA Registration -->
+  <!-- App Logic: Leaflet + MarkerCluster + Geolocation + PWA Registration -->
   <script>
     // 1. Initialize Map
     let map;
-    let markersLayer = L.layerGroup();
+    let markersLayer = null;
     let userMarker = null;
     let allCampgrounds = [];
+    let markerMap = {};
     let userCoords = null;
 
     try {
@@ -234,36 +255,43 @@
     }
 
     function initMap() {
-      // Okanogan-Wenatchee central coordinates
+      // Default view over the American West
       map = L.map('map', {
         zoomControl: false,
         attributionControl: true
-      }).setView([47.8, -120.6], 8);
+      }).setView([42.5, -117.0], 5);
 
-      // Add Zoom control on bottom-left for easier one-hand thumb access on mobile
+      // Zoom control on bottom-left for comfortable mobile one-handed access
       L.control.zoom({ position: 'bottomleft' }).addTo(map);
 
-      // Clean OpenStreetMap tiles
+      // OpenStreetMap tiles
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 18,
         attribution: '&copy; OpenStreetMap contributors'
       }).addTo(map);
 
-      markersLayer.addTo(map);
+      // High-performance MarkerClusterGroup
+      markersLayer = L.markerClusterGroup({
+        maxClusterRadius: 45,
+        spiderfyOnMaxZoom: true,
+        showCoverageOnHover: false,
+        zoomToBoundsOnClick: true,
+        disableClusteringAtZoom: 15
+      });
+
+      map.addLayer(markersLayer);
       renderCampgroundMarkers(allCampgrounds);
     }
 
-    // 2. Render Markers on Leaflet
+    // 2. Render Markers on Leaflet with Clustering
     function renderCampgroundMarkers(camps) {
+      if (!markersLayer) return;
       markersLayer.clearLayers();
-      const bounds = [];
+      markerMap = {};
 
       camps.forEach(camp => {
         if (!camp.lat || !camp.lng) return;
 
-        bounds.push([camp.lat, camp.lng]);
-
-        // Custom Tent Marker with Price Badge
         const isFree = camp.is_free;
         const badgeColor = isFree ? '#047857' : '#d97706';
         const badgeText = isFree ? 'FREE' : (camp.price_badge || '$');
@@ -288,22 +316,30 @@
 
         const marker = L.marker([camp.lat, camp.lng], { icon: customIcon });
 
+        const bookBtn = camp.reservation_url ? `
+          <a href="${camp.reservation_url}" target="_blank"
+             style="flex: 1; text-align: center; background: #1d4ed8; color: white; text-decoration: none; font-size: 11px; font-weight: bold; padding: 6px 8px; border-radius: 6px;">
+             Book ↗
+          </a>
+        ` : '';
+
         const popupContent = `
-          <div style="padding: 12px; max-width: 260px; font-family: sans-serif;">
+          <div style="padding: 12px; max-width: 270px; font-family: system-ui, -apple-system, sans-serif;">
             <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px;">
               <strong style="font-size: 14px; color: #111827;">${camp.name}</strong>
               <span style="background: #ecfdf5; color: #047857; font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px;">${camp.status}</span>
             </div>
-            <p style="font-size: 11px; color: #6b7280; margin: 0 0 6px 0;">${camp.district || 'Okanogan-Wenatchee'}</p>
+            <p style="font-size: 11px; color: #6b7280; margin: 0 0 4px 0;">${camp.district || camp.region || 'USFS West'}</p>
             <p style="font-size: 11px; color: #374151; margin: 0 0 8px 0;"><strong>Fee:</strong> ${camp.fee_text}</p>
-            <div style="display: flex; gap: 6px; margin-top: 8px;">
+            <div style="display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap;">
               <a href="https://www.google.com/maps/dir/?api=1&destination=${camp.lat},${camp.lng}" target="_blank"
                  style="flex: 1; text-align: center; background: #047857; color: white; text-decoration: none; font-size: 11px; font-weight: bold; padding: 6px 8px; border-radius: 6px;">
                  Navigate ↗
               </a>
+              ${bookBtn}
               <a href="${camp.url}" target="_blank"
                  style="flex: 1; text-align: center; background: #f3f4f6; color: #374151; text-decoration: none; font-size: 11px; padding: 6px 8px; border-radius: 6px; border: 1px solid #e5e7eb;">
-                 USFS Info ↗
+                 USFS ↗
               </a>
             </div>
           </div>
@@ -311,12 +347,10 @@
 
         marker.bindPopup(popupContent);
         marker.campId = camp.id;
+        const key = `${camp.lat.toFixed(5)},${camp.lng.toFixed(5)}`;
+        markerMap[key] = marker;
         markersLayer.addLayer(marker);
       });
-
-      if (bounds.length > 0 && !userCoords) {
-        map.fitBounds(bounds, { padding: [30, 30], maxZoom: 12 });
-      }
     }
 
     // 3. User Geolocation ("Near Me")
@@ -370,25 +404,26 @@
 
     // 4. Reset Map View
     function resetMapView() {
-      if (markersLayer.getLayers().length > 0) {
-        const group = L.featureGroup(markersLayer.getLayers());
-        if (userMarker) group.addLayer(userMarker);
-        map.fitBounds(group.getBounds(), { padding: [40, 40] });
+      if (markersLayer && markersLayer.getLayers().length > 0) {
+        map.setView([42.5, -117.0], 5);
       } else {
-        map.setView([47.8, -120.6], 8);
+        map.setView([42.5, -117.0], 5);
       }
     }
 
     // 5. Select Campground from Card
     function selectCampground(lat, lng, name) {
-      map.setView([lat, lng], 13, { animate: true });
-      markersLayer.eachLayer(layer => {
-        const mLat = layer.getLatLng().lat;
-        const mLng = layer.getLatLng().lng;
-        if (Math.abs(mLat - lat) < 0.0001 && Math.abs(mLng - lng) < 0.0001) {
-          layer.openPopup();
-        }
-      });
+      const key = `${lat.toFixed(5)},${lng.toFixed(5)}`;
+      const marker = markerMap[key];
+      if (marker && markersLayer.zoomToShowLayer) {
+        markersLayer.zoomToShowLayer(marker, () => {
+          marker.openPopup();
+        });
+      } else {
+        map.setView([lat, lng], 14, { animate: true });
+        if (marker) marker.openPopup();
+      }
+
       // On mobile, scroll map into view smoothly
       if (window.innerWidth < 768) {
         window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -400,14 +435,7 @@
       document.getElementById('sync-search-q').value = e.target.value;
     });
 
-    // 6. HTMX Event: When cards are swapped, update markers if needed
-    document.body.addEventListener('htmx:afterSwap', function(evt) {
-      if (evt.detail.target.id === 'campground-list') {
-        // Can optionally filter map pins to match visible cards
-      }
-    });
-
-    // 7. PWA Service Worker Registration
+    // 6. PWA Service Worker Registration
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('/sw.js')
@@ -416,7 +444,7 @@
       });
     }
 
-    // 8. PWA Install Banner Support
+    // 7. PWA Install Banner Support
     let deferredPrompt;
     const installBtn = document.getElementById('pwa-install-btn');
 

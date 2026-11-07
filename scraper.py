@@ -5,226 +5,223 @@ import time
 import logging
 from datetime import datetime, timezone
 import urllib.request
+import urllib.parse
 import urllib.error
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://www.fs.usda.gov"
-RECREATION_URL = (
-    "https://www.fs.usda.gov/r06/okanogan-wenatchee/recreation"
-    "?rec_site_type_attach%5BCAMPGROUND%5D=CAMPGROUND&items_per_page=50"
-)
-
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DATA_FILE = os.path.join(DATA_DIR, "campgrounds.json")
 
+# Authoritative USDA Forest Service Enterprise Data Warehouse (EDW) REST endpoint
+ARCGIS_ENDPOINT = (
+    "https://apps.fs.usda.gov/arcx/rest/services/EDW/EDW_InfraRecreationSites_01/MapServer/0/query"
+)
 
-def fetch_url(url: str, retries: int = 3, timeout: int = 15) -> str:
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 CampFinder/1.0"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-    }
-    req = urllib.request.Request(url, headers=headers)
-    for attempt in range(retries):
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                return response.read().decode("utf-8", errors="replace")
-        except Exception as e:
-            logger.warning(f"Fetch failed (attempt {attempt+1}/{retries}) for {url}: {e}")
-            if attempt < retries - 1:
-                time.sleep(2)
-            else:
-                raise e
+# USFS Regions covering the entire US West:
+# 01: Northern (Montana, northern Idaho)
+# 02: Rocky Mountain (Colorado, Wyoming, South Dakota, Nebraska)
+# 03: Southwestern (Arizona, New Mexico)
+# 04: Intermountain (Idaho, Nevada, Utah, western Wyoming)
+# 05: Pacific Southwest (California, Hawaii)
+# 06: Pacific Northwest (Washington, Oregon)
+WESTERN_REGIONS = ("01", "02", "03", "04", "05", "06")
+
+REGION_NAMES = {
+    "01": "Northern (MT/ID)",
+    "02": "Rocky Mountain (CO/WY)",
+    "03": "Southwestern (AZ/NM)",
+    "04": "Intermountain (ID/NV/UT)",
+    "05": "Pacific Southwest (CA)",
+    "06": "Pacific Northwest (WA/OR)",
+}
 
 
-def parse_price(fee_text: str) -> tuple[bool, str]:
+def parse_price(fee_text: str, fee_charged: str = "N") -> tuple[bool, str]:
     """Determine if a campsite is free or paid, and extract readable price."""
     lower = fee_text.lower()
-    if "no fee" in lower or "no fees" in lower or "free" in lower:
+    if fee_charged == "N" or "no fee" in lower or "no fees" in lower or "free" in lower:
         return True, "Free"
-    
-    # Search for dollar amounts like $15, $20 per night, etc.
+
     prices = re.findall(r"\$(\d+(?:\.\d{2})?)", fee_text)
     if prices:
-        # Take the standard single site price if present
-        return False, f"${prices[0]}/night"
-    
+        val = float(prices[0])
+        val_str = f"${int(val)}" if val.is_integer() else f"${val:.2f}"
+        return False, f"{val_str}/night"
+
     if "day use fee" in lower or "pass" in lower:
         return False, "Pass/Fee"
-    
-    return False, "Fee Required"
+
+    return False, "Fee Req."
 
 
-def scrape_campground_details(rel_url: str) -> dict:
-    url = f"{BASE_URL}{rel_url}" if rel_url.startswith("/") else rel_url
-    try:
-        html = fetch_url(url)
-    except Exception as e:
-        logger.error(f"Error fetching details from {url}: {e}")
-        return {}
-
-    # Extract coordinates
-    lat_match = re.search(r"Latitude:\s*</b>\s*([0-9.-]+)", html)
-    lng_match = re.search(r"Longitude:\s*</b>\s*([0-9.-]+)", html)
-    lat = float(lat_match.group(1)) if lat_match else None
-    lng = float(lng_match.group(1)) if lng_match else None
-
-    # Status check from detail page
-    status = "Open"
-    if "Closed" in html and "field_rec_status" in html:
-        if "Temporarily Closed" in html:
-            status = "Temporarily Closed"
-        elif "Partially Closed" in html:
-            status = "Partially Closed"
-        else:
-            status = "Closed"
-
-    # Fees extraction
-    fee_text = "No fee information available"
-    fee_match = re.search(r'id=["\']rec_acc_fees["\']>(.*?)</div>\s*</div>', html, re.DOTALL)
-    if fee_match:
-        raw_fee = fee_match.group(1)
-        cleaned = re.sub(r"<[^>]+>", " ", raw_fee)
-        cleaned = re.sub(r"&nbsp;", " ", cleaned)
-        cleaned = re.sub(r"&amp;", "&", cleaned)
-        fee_text = " ".join(cleaned.split())
-
-    is_free, price_badge = parse_price(fee_text)
-
-    # Ranger District / Area
-    district = "Okanogan-Wenatchee"
-    dist_match = re.search(r"Ranger District:\s*</b>\s*([^<]+)", html)
-    if dist_match:
-        district = dist_match.group(1).strip()
-    else:
-        for d in [
-            "Chelan Ranger District",
-            "Cle Elum Ranger District",
-            "Entiat Ranger District",
-            "Methow Valley Ranger District",
-            "Naches Ranger District",
-            "Wenatchee River Ranger District",
-        ]:
-            if d.lower() in html.lower():
-                district = d
-                break
-
-    # Stay limit & reservations
-    stay_limit = None
-    stay_match = re.search(r"Stay Limit:\s*</b>\s*([^<]+)", html)
-    if stay_match:
-        stay_limit = stay_match.group(1).strip()
-
-    reservation_url = None
-    rec_gov_match = re.search(r'href=["\'](https://www\.recreation\.gov/[^"\']+)["\']', html)
-    if rec_gov_match:
-        reservation_url = rec_gov_match.group(1)
-
-    # Elevation
-    elevation = None
-    elev_match = re.search(r"Elevation:\s*</b>\s*([^<]+)", html)
-    if elev_match:
-        elevation = elev_match.group(1).strip()
-
-    return {
-        "lat": lat,
-        "lng": lng,
-        "status": status,
-        "fee_text": fee_text,
-        "is_free": is_free,
-        "price_badge": price_badge,
-        "district": district,
-        "stay_limit": stay_limit,
-        "elevation": elevation,
-        "reservation_url": reservation_url,
-    }
+def format_camp_name(raw_name: str) -> str:
+    """Format ALL-CAPS names to clean Title Case while preserving standard abbreviations."""
+    if not raw_name:
+        return "Campground"
+    name = raw_name.strip()
+    if name.isupper():
+        name = name.title()
+    name = re.sub(r"\bCg\b", "Campground", name)
+    name = re.sub(r"\bCp\b", "Camp", name)
+    return name
 
 
-def scrape_all_campgrounds(max_pages: int = 3) -> list[dict]:
-    """Scrapes all campground listings from Okanogan-Wenatchee."""
-    campgrounds = []
-    seen_urls = set()
+def fetch_all_western_campgrounds() -> list[dict]:
+    """Fetch all campgrounds across USFS Regions 1-6 using the official EDW ArcGIS REST API."""
+    regions_str = ",".join(f"'{r}'" for r in WESTERN_REGIONS)
+    where_clause = f"site_subtype = 'CAMPGROUND' AND region IN ({regions_str})"
 
-    # Step 1: Scrape Open ones first (they have highest priority)
-    pages = [
-        f"{RECREATION_URL}&field_rec_status=1&page=0",  # Open campgrounds
-        f"{RECREATION_URL}&page=0",                     # General page 0
-        f"{RECREATION_URL}&page=1",                     # General page 1
-        f"{RECREATION_URL}&page=2",                     # General page 2
-    ]
+    out_fields = (
+        "site_name,public_site_name,recarea_name,parent_recarea,closest_towns,region,managing_org,fee_charged,"
+        "fee_description,recarea_status,restrictions,minimum_elevation,usda_portal_url,"
+        "rec1stop_url,latitude,longitude"
+    )
 
-    for list_url in pages[:max_pages]:
-        logger.info(f"Scanning directory: {list_url}")
-        try:
-            html = fetch_url(list_url)
-        except Exception as e:
-            logger.error(f"Failed to load listing page {list_url}: {e}")
-            continue
+    all_features = []
+    offset = 0
+    batch_size = 2000
 
-        # Extract articles
-        items = re.findall(
-            r'<article class=["\']wfs-rec__teaser["\']>\s*<a href=["\']([^"\']+)["\']>\s*<h3[^>]*>([^<]+)</h3>',
-            html,
+    logger.info(f"Initiating full US West USFS campground scan (Regions: {', '.join(WESTERN_REGIONS)})...")
+
+    while True:
+        params = urllib.parse.urlencode({
+            "where": where_clause,
+            "outFields": out_fields,
+            "returnGeometry": "true",
+            "outSR": "4326",
+            "resultOffset": offset,
+            "resultRecordCount": batch_size,
+            "f": "geojson",
+        })
+        url = f"{ARCGIS_ENDPOINT}?{params}"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "CampFinder/1.0 (Mozilla/5.0; https://github.com/OleksSobol/CampFinder-PWA)"
+            },
         )
 
-        for rel_url, name in items:
-            rel_url = rel_url.strip()
-            name = name.strip()
-            if rel_url in seen_urls:
-                continue
-            seen_urls.add(rel_url)
+        logger.info(f"Querying ArcGIS EDW batch: offset={offset}, limit={batch_size}...")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as res:
+                payload = json.loads(res.read().decode("utf-8"))
+        except Exception as e:
+            logger.error(f"Failed to query USFS API at offset {offset}: {e}")
+            break
 
-            # Check teaser status & snippet
-            teaser_pattern = rf'<a href=["\']{re.escape(rel_url)}["\'].*?</article>'
-            teaser_match = re.search(teaser_pattern, html, re.DOTALL)
-            teaser_text = teaser_match.group(0) if teaser_match else ""
+        features = payload.get("features", [])
+        if not features:
+            break
 
-            is_open = True
-            if "Closed" in teaser_text and "field_rec_status" in teaser_text:
-                is_open = False
+        all_features.extend(features)
+        logger.info(f"Retrieved {len(features)} records (Total so far: {len(all_features)})")
 
-            campgrounds.append({
-                "id": rel_url.split("/")[-1],
-                "name": name,
-                "url": f"{BASE_URL}{rel_url}",
-                "rel_url": rel_url,
-                "is_open": is_open,
-                "status": "Open" if is_open else "Closed",
-            })
+        if len(features) < batch_size:
+            break
+        offset += batch_size
+        time.sleep(0.3)
 
-    logger.info(f"Found {len(campgrounds)} unique campgrounds. Fetching coordinates and fees...")
+    logger.info(f"Transforming {len(all_features)} USFS campgrounds into CampFinder format...")
 
-    # Step 2: Fetch details for campgrounds
     results = []
-    for idx, camp in enumerate(campgrounds):
-        logger.info(f"[{idx+1}/{len(campgrounds)}] Scraping details: {camp['name']}")
-        details = scrape_campground_details(camp["rel_url"])
-        if details:
-            camp.update(details)
-        # Only keep entries that have valid GPS coordinates so Leaflet can display them
-        if camp.get("lat") and camp.get("lng"):
-            results.append(camp)
-        time.sleep(0.3)  # Gentle delay to respect USDA server
+    seen_coords = set()
 
-    # Save to file
+    for f in all_features:
+        props = f.get("properties", {})
+        geom = f.get("geometry", {})
+        coords = geom.get("coordinates") if geom else None
+
+        lat = coords[1] if (coords and len(coords) >= 2) else props.get("latitude")
+        lng = coords[0] if (coords and len(coords) >= 2) else props.get("longitude")
+
+        if not lat or not lng:
+            continue
+
+        # Prevent exact duplicate coordinate stacking
+        coord_key = (round(lat, 5), round(lng, 5))
+        if coord_key in seen_coords:
+            continue
+        seen_coords.add(coord_key)
+
+        raw_name = props.get("public_site_name") or props.get("site_name") or "Campground"
+        name = format_camp_name(raw_name)
+
+        fee_text = props.get("fee_description") or ""
+        fee_charged = props.get("fee_charged") or ("Y" if fee_text else "N")
+        is_free, price_badge = parse_price(fee_text, fee_charged=fee_charged)
+
+        rec_status = (props.get("recarea_status") or "").upper()
+        is_open = rec_status not in ("CLOSED", "TEMPORARILY CLOSED")
+        status = "Closed" if not is_open else "Open"
+
+        recarea = props.get("parent_recarea") or props.get("recarea_name")
+        town = props.get("closest_towns") or ""
+        reg_id = props.get("region")
+
+        district_parts = []
+        if recarea:
+            clean_rec = recarea.title() if recarea.isupper() else recarea
+            district_parts.append(clean_rec)
+        if town:
+            clean_town = re.sub(r"\s+", " ", town).strip("., ")
+            district_parts.append(clean_town)
+
+        district = " • ".join(district_parts) if district_parts else REGION_NAMES.get(reg_id, "USFS West")
+
+        usda_url = props.get("usda_portal_url")
+        if not usda_url:
+            usda_url = f"https://www.google.com/search?q={urllib.parse.quote(name + ' campground usda forest service')}"
+
+        cid = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+        if not cid:
+            cid = f"cg-{round(lat, 4)}-{round(lng, 4)}"
+
+        results.append({
+            "id": cid,
+            "name": name,
+            "url": usda_url,
+            "rel_url": None,
+            "is_open": is_open,
+            "status": status,
+            "lat": round(lat, 6),
+            "lng": round(lng, 6),
+            "fee_text": fee_text.strip() if fee_text else ("No fees required" if is_free else "Fee information on site"),
+            "is_free": is_free,
+            "price_badge": price_badge,
+            "district": district,
+            "town": town,
+            "region": REGION_NAMES.get(reg_id, "USFS West"),
+            "stay_limit": props.get("restrictions"),
+            "elevation": props.get("minimum_elevation"),
+            "reservation_url": props.get("rec1stop_url"),
+        })
+
+    logger.info(f"Processed {len(results)} valid Western US campgrounds.")
+    return results
+
+
+def save_campgrounds(campgrounds: list[dict]):
+    """Save campground dataset to json cache."""
     os.makedirs(DATA_DIR, exist_ok=True)
     payload = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "total_count": len(results),
-        "open_count": sum(1 for c in results if c.get("is_open")),
-        "campgrounds": results,
+        "total_count": len(campgrounds),
+        "open_count": sum(1 for c in campgrounds if c.get("is_open")),
+        "campgrounds": campgrounds,
     }
-
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
+    logger.info(f"Saved {len(campgrounds)} campgrounds to {DATA_FILE}")
 
-    logger.info(f"Successfully saved {len(results)} campgrounds with coordinates to {DATA_FILE}")
-    return results
+
+def scrape_all_campgrounds(max_pages: int = 3) -> list[dict]:
+    """Backwards-compatible wrapper that triggers full Western US scan."""
+    campgrounds = fetch_all_western_campgrounds()
+    if campgrounds:
+        save_campgrounds(campgrounds)
+    return campgrounds
 
 
 def get_cached_data() -> dict:
@@ -239,4 +236,4 @@ def get_cached_data() -> dict:
 
 
 if __name__ == "__main__":
-    scrape_all_campgrounds(max_pages=2)
+    scrape_all_campgrounds()

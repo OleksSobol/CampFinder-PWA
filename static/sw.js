@@ -1,4 +1,4 @@
-const CACHE_NAME = 'campfinder-v1';
+const CACHE_NAME = 'campfinder-v2';
 const STATIC_ASSETS = [
   '/',
   '/manifest.json',
@@ -7,7 +7,10 @@ const STATIC_ASSETS = [
   'https://cdn.tailwindcss.com',
   'https://unpkg.com/htmx.org@1.9.10',
   'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
-  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
+  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
+  'https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css',
+  'https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css',
+  'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js'
 ];
 
 self.addEventListener('install', (event) => {
@@ -50,14 +53,14 @@ self.addEventListener('fetch', (event) => {
         .catch(() => {
           return caches.match(request).then((cachedResponse) => {
             if (cachedResponse) return cachedResponse;
-            // Fallback for navigation requests
+            // Return root index page for offline navigation
             if (request.mode === 'navigate') {
               return caches.match('/');
             }
-            return new Response('Offline: Data not available in cache', {
+            return new Response('Offline: Data currently unavailable', {
               status: 503,
               statusText: 'Service Unavailable',
-              headers: new Headers({ 'Content-Type': 'text/plain' }),
+              headers: new Headers({ 'Content-Type': 'text/plain' })
             });
           });
         })

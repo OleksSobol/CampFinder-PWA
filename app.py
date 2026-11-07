@@ -42,14 +42,17 @@ def filter_and_sort_campgrounds(
     filter_type: Optional[str] = "all",
     user_lat: Optional[float] = None,
     user_lng: Optional[float] = None,
-) -> list[dict]:
+) -> tuple[list[dict], int]:
     results = []
 
     for camp in campgrounds:
-        # 1. Text Search Filter
-        if q:
-            search_str = f"{camp.get('name', '')} {camp.get('district', '')} {camp.get('fee_text', '')}".lower()
-            if q.lower().strip() not in search_str:
+        # 1. Text Search Filter across Name, District, Region, Fee Info
+        if q and q.strip():
+            query_lower = q.lower().strip()
+            search_str = (
+                f"{camp.get('name', '')} {camp.get('district', '')} {camp.get('region', '')} {camp.get('fee_text', '')}"
+            ).lower()
+            if query_lower not in search_str:
                 continue
 
         # 2. Type / Price Filter
@@ -61,7 +64,6 @@ def filter_and_sort_campgrounds(
         elif filter_type == "paid" and is_free:
             continue
         elif filter_type == "under15":
-            # Free or <= $15
             if not is_free:
                 import re
                 prices = re.findall(r"\$(\d+)", price_badge)
@@ -78,13 +80,15 @@ def filter_and_sort_campgrounds(
 
         results.append(camp_copy)
 
+    total_matches = len(results)
+
     # 4. Sort by Distance if available, else by name
     if user_lat is not None and user_lng is not None:
         results.sort(key=lambda x: (x["distance_miles"] is None, x["distance_miles"] or 999999))
     else:
         results.sort(key=lambda x: x.get("name", ""))
 
-    return results
+    return results, total_matches
 
 
 @asynccontextmanager
@@ -92,11 +96,11 @@ async def lifespan(app: FastAPI):
     # Ensure data exists on startup
     data = scraper.get_cached_data()
     if not data.get("campgrounds"):
-        logger.info("No cached campgrounds found on startup. Triggering initial scrape...")
+        logger.info("No cached campgrounds found on startup. Triggering initial Western US scan...")
         try:
-            scraper.scrape_all_campgrounds(max_pages=1)
+            scraper.scrape_all_campgrounds()
         except Exception as e:
-            logger.error(f"Startup scrape failed: {e}")
+            logger.error(f"Startup scan failed: {e}")
     yield
 
 
@@ -146,15 +150,43 @@ async def api_campgrounds():
 @app.get("/", response_class=HTMLResponse)
 async def index_page(request: Request):
     data = scraper.get_cached_data()
-    campgrounds = data.get("campgrounds", [])
-    for c in campgrounds:
-        c["distance_miles"] = None
+    all_campgrounds = data.get("campgrounds", [])
+
+    # Light map payload for instant Leaflet loading
+    map_campgrounds = [
+        {
+            "id": c.get("id"),
+            "name": c.get("name"),
+            "lat": c.get("lat"),
+            "lng": c.get("lng"),
+            "status": c.get("status", "Open"),
+            "is_free": c.get("is_free", False),
+            "price_badge": c.get("price_badge", "Free"),
+            "district": c.get("district", ""),
+            "region": c.get("region", ""),
+            "fee_text": c.get("fee_text", ""),
+            "url": c.get("url", ""),
+            "reservation_url": c.get("reservation_url"),
+        }
+        for c in all_campgrounds
+    ]
+
+    # Initial top 100 cards for fast DOM rendering
+    top_cards = []
+    for c in all_campgrounds[:100]:
+        c_copy = dict(c)
+        c_copy["distance_miles"] = None
+        top_cards.append(c_copy)
 
     return templates.TemplateResponse(
         request=request,
         name="index.html",
         context={
-            "campgrounds": campgrounds,
+            "campgrounds": top_cards,
+            "total_matches": len(all_campgrounds),
+            "total_count": data.get("total_count", len(all_campgrounds)),
+            "open_count": data.get("open_count", 0),
+            "map_campgrounds": map_campgrounds,
             "updated_at": data.get("updated_at"),
             "user_loc": False,
         },
@@ -171,24 +203,28 @@ async def list_campgrounds(
     lng: Optional[str] = Query(None),
 ):
     data = scraper.get_cached_data()
-    campgrounds = data.get("campgrounds", [])
+    all_campgrounds = data.get("campgrounds", [])
 
     user_lat = float(lat) if lat and lat.strip() else None
     user_lng = float(lng) if lng and lng.strip() else None
 
-    filtered = filter_and_sort_campgrounds(
-        campgrounds=campgrounds,
+    filtered, total_matches = filter_and_sort_campgrounds(
+        campgrounds=all_campgrounds,
         q=q,
         filter_type=filter,
         user_lat=user_lat,
         user_lng=user_lng,
     )
 
+    # Return top 100 matches to keep client-side rendering snappy
+    visible_cards = filtered[:100]
+
     return templates.TemplateResponse(
         request=request,
         name="cards.html",
         context={
-            "campgrounds": filtered,
+            "campgrounds": visible_cards,
+            "total_matches": total_matches,
             "user_loc": user_lat is not None,
         },
     )
@@ -198,11 +234,11 @@ async def list_campgrounds(
 @app.post("/refresh", response_class=HTMLResponse)
 async def refresh_campgrounds(background_tasks: BackgroundTasks):
     def run_scrape():
-        logger.info("Executing background re-scrape of campgrounds...")
-        scraper.scrape_all_campgrounds(max_pages=2)
+        logger.info("Executing background scan of US West campgrounds...")
+        scraper.scrape_all_campgrounds()
 
     background_tasks.add_task(run_scrape)
-    return HTMLResponse('<span class="text-emerald-200 animate-pulse">Syncing...</span>')
+    return HTMLResponse('<span class="text-emerald-200 animate-pulse">Syncing US West...</span>')
 
 
 if __name__ == "__main__":
