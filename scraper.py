@@ -104,6 +104,8 @@ FOREST_SLUG_MAP = {
     "0618": ("r06", "willamette"),
     "0621": ("r06", "colville"),
     "0622": ("r06", "columbiarivergorge"),
+    "1004": ("r10", "chugach"),
+    "1005": ("r10", "tongass"),
 }
 
 REGION_NAMES = {
@@ -113,6 +115,7 @@ REGION_NAMES = {
     "04": "Intermountain (ID/NV/UT)",
     "05": "Pacific Southwest (CA)",
     "06": "Pacific Northwest (WA/OR)",
+    "10": "Alaska (AK)",
 }
 
 
@@ -196,7 +199,7 @@ def fetch_infra_lookup() -> dict:
     lookup = {}
     offset = 0
     batch_size = 2000
-    regions_str = "('01', '02', '03', '04', '05', '06')"
+    regions_str = "('01', '02', '03', '04', '05', '06', '10')"
     where_infra = f"site_subtype = 'CAMPGROUND' AND region IN {regions_str}"
 
     while True:
@@ -271,7 +274,8 @@ def fetch_all_western_campgrounds() -> list[dict]:
     where_clause = (
         "markeractivitygroup = 'Camping & Cabins' AND ("
         "forestorgcode LIKE '01%' OR forestorgcode LIKE '02%' OR forestorgcode LIKE '03%' OR "
-        "forestorgcode LIKE '04%' OR forestorgcode LIKE '05%' OR forestorgcode LIKE '06%')"
+        "forestorgcode LIKE '04%' OR forestorgcode LIKE '05%' OR forestorgcode LIKE '06%' OR "
+        "forestorgcode LIKE '10%')"
     )
 
     out_fields = (
