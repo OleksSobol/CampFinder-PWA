@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DATA_FILE = os.path.join(DATA_DIR, "campgrounds.json")
+SEED_FILE = os.path.join(os.path.dirname(__file__), "campgrounds_seed.json")
 
 # Authoritative USDA Forest Service Enterprise Data Warehouse (EDW) REST endpoint
 ARCGIS_ENDPOINT = (
@@ -203,7 +204,7 @@ def fetch_all_western_campgrounds() -> list[dict]:
 
 
 def save_campgrounds(campgrounds: list[dict]):
-    """Save campground dataset to json cache."""
+    """Save campground dataset to json cache and seed file."""
     os.makedirs(DATA_DIR, exist_ok=True)
     payload = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -213,6 +214,12 @@ def save_campgrounds(campgrounds: list[dict]):
     }
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
+    # Also save to seed file so container builds always have current seed
+    try:
+        with open(SEED_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Failed to update seed file: {e}")
     logger.info(f"Saved {len(campgrounds)} campgrounds to {DATA_FILE}")
 
 
@@ -225,14 +232,31 @@ def scrape_all_campgrounds(max_pages: int = 3) -> list[dict]:
 
 
 def get_cached_data() -> dict:
-    """Read cached campground data from disk."""
+    """Read cached campground data from disk, auto-seeding if volume data is stale/incomplete."""
+    data = None
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
         except Exception as e:
             logger.error(f"Error reading {DATA_FILE}: {e}")
-    return {"updated_at": None, "total_count": 0, "open_count": 0, "campgrounds": []}
+
+    # If data is missing or holds fewer than 1,000 campgrounds (e.g. stale initial volume)
+    if not data or data.get("total_count", 0) < 1000:
+        if os.path.exists(SEED_FILE):
+            try:
+                with open(SEED_FILE, "r", encoding="utf-8") as f:
+                    seed_data = json.load(f)
+                if seed_data.get("total_count", 0) >= 1000:
+                    logger.info(f"Overwriting stale volume cache with {seed_data.get('total_count')} seed campgrounds...")
+                    os.makedirs(DATA_DIR, exist_ok=True)
+                    with open(DATA_FILE, "w", encoding="utf-8") as f:
+                        json.dump(seed_data, f, indent=2)
+                    return seed_data
+            except Exception as e:
+                logger.error(f"Failed to read seed file {SEED_FILE}: {e}")
+
+    return data or {"updated_at": None, "total_count": 0, "open_count": 0, "campgrounds": []}
 
 
 if __name__ == "__main__":

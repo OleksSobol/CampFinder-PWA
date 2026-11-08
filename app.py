@@ -4,7 +4,7 @@ import logging
 from typing import Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, BackgroundTasks, Query
+from fastapi import FastAPI, Request, Query
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -46,11 +46,12 @@ def filter_and_sort_campgrounds(
     results = []
 
     for camp in campgrounds:
-        # 1. Text Search Filter across Name, District, Region, Fee Info
+        # 1. Text Search Filter across Name, District, Region, Town, Fee Info
         if q and q.strip():
             query_lower = q.lower().strip()
             search_str = (
-                f"{camp.get('name', '')} {camp.get('district', '')} {camp.get('region', '')} {camp.get('fee_text', '')}"
+                f"{camp.get('name', '')} {camp.get('district', '')} {camp.get('town', '')} "
+                f"{camp.get('region', '')} {camp.get('fee_text', '')}"
             ).lower()
             if query_lower not in search_str:
                 continue
@@ -86,17 +87,17 @@ def filter_and_sort_campgrounds(
     if user_lat is not None and user_lng is not None:
         results.sort(key=lambda x: (x["distance_miles"] is None, x["distance_miles"] or 999999))
     else:
-        results.sort(key=lambda x: x.get("name", ""))
+        results.sort(key=lambda x: (x.get("name") or ""))
 
     return results, total_matches
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Ensure data exists on startup
+    # Ensure full data exists on startup (auto-seed or scan if under 1,000)
     data = scraper.get_cached_data()
-    if not data.get("campgrounds"):
-        logger.info("No cached campgrounds found on startup. Triggering initial Western US scan...")
+    if not data.get("campgrounds") or data.get("total_count", 0) < 1000:
+        logger.info("Fewer than 1,000 campgrounds found on startup. Triggering full US West scan...")
         try:
             scraper.scrape_all_campgrounds()
         except Exception as e:
@@ -163,6 +164,7 @@ async def index_page(request: Request):
             "is_free": c.get("is_free", False),
             "price_badge": c.get("price_badge", "Free"),
             "district": c.get("district", ""),
+            "town": c.get("town", ""),
             "region": c.get("region", ""),
             "fee_text": c.get("fee_text", ""),
             "url": c.get("url", ""),
@@ -230,15 +232,21 @@ async def list_campgrounds(
     )
 
 
-# HTMX Trigger: Background Refresh Scrape
+# HTMX Trigger: On-Demand Refresh Scrape
 @app.post("/refresh", response_class=HTMLResponse)
-async def refresh_campgrounds(background_tasks: BackgroundTasks):
-    def run_scrape():
-        logger.info("Executing background scan of US West campgrounds...")
-        scraper.scrape_all_campgrounds()
-
-    background_tasks.add_task(run_scrape)
-    return HTMLResponse('<span class="text-emerald-200 animate-pulse">Syncing US West...</span>')
+async def refresh_campgrounds():
+    logger.info("Executing on-demand scan of US West campgrounds...")
+    try:
+        campgrounds = scraper.scrape_all_campgrounds()
+        count = len(campgrounds)
+        return HTMLResponse(
+            f'<span class="text-emerald-200">Synced {count}!</span>'
+            f'<script>setTimeout(() => window.location.reload(), 400);</script>',
+            headers={"HX-Refresh": "true"},
+        )
+    except Exception as e:
+        logger.error(f"Refresh failed: {e}")
+        return HTMLResponse('<span class="text-rose-200">Sync failed</span>')
 
 
 if __name__ == "__main__":
