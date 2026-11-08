@@ -15,10 +15,96 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DATA_FILE = os.path.join(DATA_DIR, "campgrounds.json")
 SEED_FILE = os.path.join(os.path.dirname(__file__), "campgrounds_seed.json")
 
-# Authoritative USDA Forest Service Recreation Opportunities REST endpoint (powers live fs.usda.gov recreation pages)
-ARCGIS_ENDPOINT = (
+# Authoritative USDA Forest Service REST endpoints
+OPPORTUNITIES_ENDPOINT = (
     "https://apps.fs.usda.gov/arcx/rest/services/EDW/EDW_RecreationOpportunities_01/MapServer/0/query"
 )
+INFRA_ENDPOINT = (
+    "https://apps.fs.usda.gov/arcx/rest/services/EDW/EDW_InfraRecreationSites_01/MapServer/0/query"
+)
+
+# Complete 79 National Forest Org Code -> (Region, Forest Slug) mapping for modern USFS Drupal URLs
+FOREST_SLUG_MAP = {
+    "0102": ("r01", "beaverhead-deerlodge"),
+    "0103": ("r01", "bitterroot"),
+    "0104": ("r01", "idahopanhandle"),
+    "0110": ("r01", "flathead"),
+    "0111": ("r01", "custergallatin"),
+    "0114": ("r01", "kootenai"),
+    "0115": ("r01", "helena-lewisclark"),
+    "0116": ("r01", "lolo"),
+    "0117": ("r01", "nezperce-clearwater"),
+    "0118": ("r01", "dpg"),
+    "0202": ("r02", "bighorn"),
+    "0203": ("r02", "blackhills"),
+    "0204": ("r02", "gmug"),
+    "0206": ("r02", "mbrtb"),
+    "0207": ("r02", "nebraska"),
+    "0209": ("r02", "riogrande"),
+    "0210": ("r02", "arp"),
+    "0212": ("r02", "psicc"),
+    "0213": ("r02", "sanjuan"),
+    "0214": ("r02", "shoshone"),
+    "0215": ("r02", "whiteriver"),
+    "0301": ("r03", "apache-sitgreaves"),
+    "0302": ("r03", "carson"),
+    "0303": ("r03", "cibola"),
+    "0304": ("r03", "coconino"),
+    "0305": ("r03", "coronado"),
+    "0306": ("r03", "gila"),
+    "0307": ("r03", "kaibab"),
+    "0308": ("r03", "lincoln"),
+    "0309": ("r03", "prescott"),
+    "0310": ("r03", "santafe"),
+    "0312": ("r03", "tonto"),
+    "0401": ("r04", "ashley"),
+    "0402": ("r04", "boise"),
+    "0403": ("r04", "bridger-teton"),
+    "0407": ("r04", "dixie"),
+    "0408": ("r04", "fishlake"),
+    "0410": ("r04", "manti-lasal"),
+    "0412": ("r04", "payette"),
+    "0413": ("r04", "salmon-challis"),
+    "0414": ("r04", "sawtooth"),
+    "0415": ("r04", "caribou-targhee"),
+    "0417": ("r04", "humboldt-toiyabe"),
+    "0419": ("r04", "uinta-wasatch-cache"),
+    "0501": ("r05", "angeles"),
+    "0502": ("r05", "cleveland"),
+    "0503": ("r05", "eldorado"),
+    "0504": ("r05", "inyo"),
+    "0505": ("r05", "klamath"),
+    "0506": ("r05", "lassen"),
+    "0507": ("r05", "lospadres"),
+    "0508": ("r05", "mendocino"),
+    "0509": ("r05", "modoc"),
+    "0510": ("r05", "sixrivers"),
+    "0511": ("r05", "plumas"),
+    "0512": ("r05", "sanbernardino"),
+    "0513": ("r05", "sequoia"),
+    "0514": ("r05", "shasta-trinity"),
+    "0515": ("r05", "sierra"),
+    "0516": ("r05", "stanislaus"),
+    "0517": ("r05", "tahoe"),
+    "0519": ("r05", "laketahoebasin"),
+    "0601": ("r06", "deschutes"),
+    "0602": ("r06", "fremont-winema"),
+    "0603": ("r06", "giffordpinchot"),
+    "0604": ("r06", "malheur"),
+    "0605": ("r06", "mbs"),
+    "0606": ("r06", "mthood"),
+    "0607": ("r06", "ochoco"),
+    "0609": ("r06", "olympic"),
+    "0610": ("r06", "rogue-siskiyou"),
+    "0612": ("r06", "siuslaw"),
+    "0614": ("r06", "umatilla"),
+    "0615": ("r06", "umpqua"),
+    "0616": ("r06", "wallowa-whitman"),
+    "0617": ("r06", "okanogan-wenatchee"),
+    "0618": ("r06", "willamette"),
+    "0621": ("r06", "colville"),
+    "0622": ("r06", "columbiarivergorge"),
+}
 
 REGION_NAMES = {
     "01": "Northern (MT/ID)",
@@ -104,8 +190,84 @@ def format_camp_name(raw_name: str) -> str:
     return name
 
 
+def fetch_infra_lookup() -> dict:
+    """Fetch authoritative portal URLs and Recreation.gov booking links from Infra database."""
+    logger.info("Loading Infra recreation lookup table for direct Drupal & Booking URLs...")
+    lookup = {}
+    offset = 0
+    batch_size = 2000
+    regions_str = "('01', '02', '03', '04', '05', '06')"
+    where_infra = f"site_subtype = 'CAMPGROUND' AND region IN {regions_str}"
+
+    while True:
+        params = urllib.parse.urlencode({
+            "where": where_infra,
+            "outFields": "site_cn,public_site_name,usda_portal_url,rec1stop_url",
+            "returnGeometry": "false",
+            "resultOffset": offset,
+            "resultRecordCount": batch_size,
+            "f": "json",
+        })
+        req = urllib.request.Request(
+            f"{INFRA_ENDPOINT}?{params}",
+            headers={"User-Agent": "CampFinder/1.0 (Mozilla/5.0; https://github.com/OleksSobol/CampFinder-PWA)"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.load(resp)
+        except Exception as e:
+            logger.warning(f"Infra lookup fetch failed at offset {offset}: {e}")
+            break
+
+        features = data.get("features", [])
+        if not features:
+            break
+
+        for f in features:
+            a = f.get("attributes", {})
+            cn = a.get("site_cn")
+            if cn:
+                lookup[cn] = a
+
+        if len(features) < batch_size:
+            break
+        offset += batch_size
+
+    logger.info(f"Loaded {len(lookup)} authoritative Infra records.")
+    return lookup
+
+
+def build_campsite_url(name: str, org_code: str, infra_cn: str, infra_lookup: dict) -> tuple[str, str | None]:
+    """Return authoritative (usda_url, reservation_url) guaranteed not to redirect to root recreation page."""
+    infra_record = infra_lookup.get(infra_cn) if infra_cn else None
+
+    # 1. Official modern portal URL from Infra if available
+    if infra_record:
+        portal_url = infra_record.get("usda_portal_url")
+        rec1stop = infra_record.get("rec1stop_url")
+        if portal_url and "recarea/?recid=" not in portal_url:
+            return portal_url, rec1stop
+
+    # 2. Derive modern Drupal URL using forest org code and slug
+    org_prefix = org_code[:4] if org_code else ""
+    if org_prefix in FOREST_SLUG_MAP:
+        reg_code, forest_slug = FOREST_SLUG_MAP[org_prefix]
+        clean_name = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+        if "camp" not in clean_name and "dispersed" not in clean_name and "cabin" not in clean_name:
+            clean_name = f"{clean_name}-campground"
+        derived_url = f"https://www.fs.usda.gov/{reg_code}/{forest_slug}/recreation/{clean_name}"
+        rec1stop = infra_record.get("rec1stop_url") if infra_record else None
+        return derived_url, rec1stop
+
+    # 3. Clean search fallback
+    fallback = f"https://www.google.com/search?q={urllib.parse.quote(name + ' campground usda forest service')}"
+    return fallback, None
+
+
 def fetch_all_western_campgrounds() -> list[dict]:
-    """Fetch live recreation camping areas across USFS Western Regions (1-6)."""
+    """Fetch live recreation camping areas across USFS Western Regions (1-6) with modern direct URLs."""
+    infra_lookup = fetch_infra_lookup()
+
     where_clause = (
         "markeractivitygroup = 'Camping & Cabins' AND ("
         "forestorgcode LIKE '01%' OR forestorgcode LIKE '02%' OR forestorgcode LIKE '03%' OR "
@@ -114,7 +276,7 @@ def fetch_all_western_campgrounds() -> list[dict]:
 
     out_fields = (
         "recareaname,longitude,latitude,recareaurl,forestname,forestorgcode,feedescription,"
-        "operational_hours,openstatus,reservation_info,restrictions,markeractivity"
+        "operational_hours,openstatus,reservation_info,restrictions,markeractivity,infra_cn"
     )
 
     all_features = []
@@ -132,7 +294,7 @@ def fetch_all_western_campgrounds() -> list[dict]:
             "resultRecordCount": batch_size,
             "f": "json",
         })
-        url = f"{ARCGIS_ENDPOINT}?{params}"
+        url = f"{OPPORTUNITIES_ENDPOINT}?{params}"
         req = urllib.request.Request(
             url,
             headers={
@@ -215,24 +377,24 @@ def fetch_all_western_campgrounds() -> list[dict]:
         is_free, price_badge = parse_price(fee_clean, name=name)
 
         forest = a.get("forestname") or "National Forest"
-        org_code = (a.get("forestorgcode") or "")[:2]
-        region = REGION_NAMES.get(org_code, "USFS West")
+        org_code = a.get("forestorgcode") or ""
+        region = REGION_NAMES.get(org_code[:2], "USFS West")
 
-        # Reservation Link
-        reservation_url = None
-        for txt in [
-            a.get("reservation_info") or "",
-            a.get("feedescription") or "",
-            a.get("restrictions") or "",
-        ]:
-            rec_match = re.search(r"https?://(?:www\.)?recreation\.gov/[^\s\"'<>)]+", txt)
-            if rec_match:
-                reservation_url = rec_match.group(0)
-                break
+        # Authoritative modern URL and Direct Reservation URL
+        infra_cn = a.get("infra_cn")
+        usda_url, reservation_url = build_campsite_url(name, org_code, infra_cn, infra_lookup)
 
-        usda_url = a.get("recareaurl")
-        if not usda_url:
-            usda_url = f"https://www.google.com/search?q={urllib.parse.quote(name + ' campground usda forest service')}"
+        # If reservation_url wasn't in Infra, look for explicit recreation.gov link in text
+        if not reservation_url:
+            for txt in [
+                a.get("reservation_info") or "",
+                a.get("feedescription") or "",
+                a.get("restrictions") or "",
+            ]:
+                rec_match = re.search(r"https?://(?:www\.)?recreation\.gov/[^\s\"'<>)]+", txt)
+                if rec_match:
+                    reservation_url = rec_match.group(0)
+                    break
 
         cid = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
         if not cid:
