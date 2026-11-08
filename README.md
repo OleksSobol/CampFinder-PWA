@@ -97,29 +97,7 @@ If you prefer Docker Compose:
 
 ---
 
-## 🌐 Connecting Your Cloudflare Domain (`camp.lab.osobol.com`)
 
-You have two easy ways to expose this through Cloudflare:
-
-### Option A: Cloudflare Tunnel (`cloudflared`) — *Recommended (No Open Router Ports)*
-If your home server runs behind a dynamic IP or NAT:
-1. In your **Cloudflare Zero Trust Dashboard** -> **Networks** -> **Tunnels**:
-   - Create a new tunnel (or use an existing one running on your home server).
-2. Add a **Public Hostname**:
-   - **Subdomain**: `camp`
-   - **Domain**: `lab.osobol.com`
-   - **Service**: `HTTP` -> `localhost:8000` (or the internal Coolify container IP/hostname `campfinder:8000`).
-3. Save. Cloudflare will automatically route `https://camp.lab.osobol.com` with full HTTPS encryption!
-
-### Option B: Coolify Domain Mapping + Cloudflare DNS Proxy
-1. In your **Cloudflare DNS Dashboard** for `osobol.com`:
-   - Add a `CNAME` or `A` record for `camp.lab` pointing to your home server's public IP / DDNS hostname.
-   - Ensure the orange cloud (Proxy) is enabled.
-2. In **Coolify Application Settings**:
-   - Set **Domains** to: `https://camp.lab.osobol.com`
-   - Coolify's built-in reverse proxy (Traefik/Caddy) will handle SSL certificates and route traffic to the container.
-
----
 
 ## 🔄 Updating Data
 
