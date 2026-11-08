@@ -107,7 +107,7 @@
           CampFinder
           <span class="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-emerald-800 text-emerald-200 border border-emerald-700">PWA</span>
         </h1>
-        <p class="text-xs text-emerald-200/80 leading-tight mt-0.5">US West Campsites ({{ total_count }} total)</p>
+        <p class="text-xs text-emerald-200/80 leading-tight mt-0.5">US West Campsites ({{ open_count }} Open &bull; {{ total_count }} Total)</p>
       </div>
     </div>
 
@@ -115,7 +115,7 @@
       <!-- Live Status / Refresh Trigger -->
       <form hx-post="/refresh" hx-target="#refresh-status" hx-indicator="#refresh-spinner" class="m-0">
         <button type="submit"
-                title="Sync campgrounds from Forest Service"
+                title="Sync live status from Forest Service"
                 class="flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-emerald-800/80 hover:bg-emerald-700 text-emerald-100 border border-emerald-700/70 transition-all">
           <svg id="refresh-spinner" class="htmx-indicator animate-spin -ml-0.5 mr-1 h-3.5 w-3.5 text-white" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -132,11 +132,11 @@
     </div>
   </header>
 
-  <!-- Main Split Layout (Desktop: Side-by-side | Mobile: Map top, list bottom or toggleable) -->
+  <!-- Main Container -->
   <main class="flex-1 flex flex-col md:flex-row overflow-hidden relative">
 
-    <!-- Map Viewport -->
-    <div class="w-full md:w-3/5 lg:w-2/3 h-64 md:h-full relative shrink-0 order-1 md:order-2">
+    <!-- Map Viewport (Takes full screen on mobile, 60% on desktop) -->
+    <div id="map-container" class="w-full h-full md:w-3/5 lg:w-2/3 relative order-1 md:order-2">
       <div id="map"></div>
 
       <!-- Floating Controls on Map -->
@@ -153,12 +153,12 @@
         <!-- Dynamic Map Count Badge -->
         <div id="map-count-badge" class="bg-white/95 text-emerald-900 px-2.5 py-1.5 rounded-xl shadow-md border border-slate-200 text-[11px] font-bold flex items-center gap-1.5">
           <span class="w-2 h-2 rounded-full bg-emerald-600 animate-pulse"></span>
-          <span id="map-count-text">{{ total_count }} campgrounds on map</span>
+          <span id="map-count-text">{{ total_matches }} open on map</span>
         </div>
       </div>
 
       <!-- Recenter View Button -->
-      <div class="absolute bottom-4 right-4 z-[1000]">
+      <div class="absolute bottom-20 md:bottom-4 right-4 z-[1000]">
         <button onclick="resetMapView()"
                 class="bg-white/95 hover:bg-white text-gray-700 p-2.5 rounded-xl shadow-md border border-slate-200 transition-all"
                 title="Fit campgrounds on map">
@@ -167,11 +167,37 @@
           </svg>
         </button>
       </div>
+
+      <!-- Floating Mobile View Toggle Button -->
+      <div class="md:hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-[1100]">
+        <button id="mobile-view-toggle" onclick="toggleMobileView()"
+                class="flex items-center gap-2 bg-emerald-900/95 hover:bg-emerald-900 text-white font-bold text-xs px-5 py-3 rounded-full shadow-2xl border border-emerald-700/80 active:scale-95 transition-all backdrop-blur-sm">
+          <span id="mobile-toggle-icon">📋</span>
+          <span id="mobile-toggle-text">View List (<span id="mobile-toggle-count">{{ total_matches }}</span>)</span>
+        </button>
+      </div>
     </div>
 
-    <!-- Side Panel / Bottom Drawer (List, Filters & Search) -->
-    <aside class="w-full md:w-2/5 lg:w-1/3 flex-1 md:h-full flex flex-col bg-slate-50 border-r border-slate-200 z-20 order-2 md:order-1 overflow-hidden shadow-lg md:shadow-none">
+    <!-- Side Panel / Sliding Mobile Drawer (Filters & Cards) -->
+    <!-- On desktop: static side panel. On mobile: full-screen sliding sheet from bottom -->
+    <aside id="list-drawer"
+           class="fixed inset-x-0 bottom-0 top-[56px] md:static md:top-auto w-full md:w-2/5 lg:w-1/3 flex flex-col bg-slate-50 border-r border-slate-200 z-[1050] md:z-20 order-2 md:order-1 overflow-hidden shadow-2xl md:shadow-none transition-transform duration-300 ease-in-out translate-y-full md:translate-y-0">
       
+      <!-- Mobile Drawer Top Bar with Close Button -->
+      <div class="md:hidden p-3 bg-emerald-950 text-white flex items-center justify-between shrink-0 shadow-md">
+        <div class="flex items-center gap-2">
+          <span class="text-sm font-bold">Campgrounds</span>
+          <span id="mobile-drawer-count" class="text-xs px-2 py-0.5 rounded-full bg-emerald-800 text-emerald-200 font-semibold">{{ total_matches }}</span>
+        </div>
+        <button onclick="toggleMobileView(false)"
+                class="flex items-center gap-1.5 text-xs bg-emerald-800 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg border border-emerald-700 font-bold transition-colors">
+          <span>🗺️ Map</span>
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+          </svg>
+        </button>
+      </div>
+
       <!-- Filter Bar -->
       <div class="p-3 bg-white border-b border-slate-200 shrink-0 space-y-2.5">
         
@@ -180,7 +206,7 @@
           <input type="text"
                  id="search-input"
                  name="q"
-                 placeholder="Search name, region, state or district..."
+                 placeholder="Search name, national forest or town..."
                  hx-get="/campgrounds"
                  hx-target="#campground-list"
                  hx-trigger="keyup changed delay:250ms, search"
@@ -200,7 +226,13 @@
           <!-- Filter Pills -->
           <div class="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs font-semibold no-scrollbar">
             <label class="cursor-pointer shrink-0">
-              <input type="radio" name="filter" value="all" class="peer hidden" checked>
+              <input type="radio" name="filter" value="open" class="peer hidden" checked>
+              <span class="px-3 py-1.5 rounded-lg border border-slate-200 peer-checked:bg-emerald-800 peer-checked:text-white peer-checked:border-emerald-800 text-gray-600 hover:bg-slate-100 transition-colors">
+                🟢 Open ({{ open_count }})
+              </span>
+            </label>
+            <label class="cursor-pointer shrink-0">
+              <input type="radio" name="filter" value="all" class="peer hidden">
               <span class="px-3 py-1.5 rounded-lg border border-slate-200 peer-checked:bg-emerald-800 peer-checked:text-white peer-checked:border-emerald-800 text-gray-600 hover:bg-slate-100 transition-colors">
                 All ({{ total_count }})
               </span>
@@ -228,7 +260,7 @@
       </div>
 
       <!-- Scrollable Campground Cards List -->
-      <div id="campground-list" class="flex-1 overflow-y-auto p-3 space-y-3">
+      <div id="campground-list" class="flex-1 overflow-y-auto p-3 space-y-3 pb-24 md:pb-3">
         {% include "cards.html" %}
       </div>
 
@@ -236,7 +268,7 @@
 
   </main>
 
-  <!-- Embed Scraped Data into client-side JS -->
+  <!-- Embed Live Data into client-side JS -->
   <script id="initial-campground-data" type="application/json">
     {{ map_campgrounds|tojson }}
   </script>
@@ -250,6 +282,7 @@
     let markerMap = {};
     let userCoords = null;
     let filterDebounceTimer = null;
+    let isMobileListOpen = false;
 
     try {
       const dataScript = document.getElementById('initial-campground-data');
@@ -285,15 +318,37 @@
 
       map.addLayer(markersLayer);
 
-      // Render initial markers
+      // Initial filter: default to open campgrounds
       applyFilters(false);
     }
 
-    // 2. Client-side Filter Logic for Map
+    // 2. Mobile View Toggle (Map vs Full-screen List Drawer)
+    function toggleMobileView(forceState = null) {
+      const drawer = document.getElementById('list-drawer');
+      const toggleIcon = document.getElementById('mobile-toggle-icon');
+      const toggleText = document.getElementById('mobile-toggle-text');
+
+      isMobileListOpen = forceState !== null ? forceState : !isMobileListOpen;
+
+      if (isMobileListOpen) {
+        drawer.classList.remove('translate-y-full');
+        drawer.classList.add('translate-y-0');
+        if (toggleIcon) toggleIcon.textContent = '🗺️';
+        if (toggleText) toggleText.textContent = 'View Map';
+      } else {
+        drawer.classList.add('translate-y-full');
+        drawer.classList.remove('translate-y-0');
+        if (toggleIcon) toggleIcon.textContent = '📋';
+        const currentCount = document.getElementById('mobile-drawer-count')?.textContent || '{{ open_count }}';
+        if (toggleText) toggleText.innerHTML = `View List (<span id="mobile-toggle-count">${currentCount}</span>)`;
+      }
+    }
+
+    // 3. Client-side Filter Logic for Map
     function filterCampgroundsClient(camps, filterType, query) {
       let filtered = camps;
 
-      // Text Search Filter across Name, District, Town, Region, Fee Info
+      // Text Search Filter across Name, Forest, District, Town, Fee Info
       if (query && query.trim()) {
         const q = query.toLowerCase().trim();
         filtered = filtered.filter(c => {
@@ -302,8 +357,10 @@
         });
       }
 
-      // Price / Type Filter
-      if (filterType === 'free') {
+      // Status / Price / Type Filter
+      if (filterType === 'open') {
+        filtered = filtered.filter(c => c.is_open);
+      } else if (filterType === 'free') {
         filtered = filtered.filter(c => c.is_free);
       } else if (filterType === 'paid') {
         filtered = filtered.filter(c => !c.is_free);
@@ -314,25 +371,34 @@
           return prices && parseInt(prices[1], 10) <= 15;
         });
       }
+      // 'all' includes everything
 
       return filtered;
     }
 
-    // 3. Apply Filters to Map Markers
+    // 4. Apply Filters to Map Markers
     function applyFilters(autoZoom = false) {
       const query = document.getElementById('search-input')?.value || '';
-      const filterType = document.querySelector('input[name="filter"]:checked')?.value || 'all';
+      const filterType = document.querySelector('input[name="filter"]:checked')?.value || 'open';
 
       const filtered = filterCampgroundsClient(allCampgrounds, filterType, query);
       renderCampgroundMarkers(filtered);
 
-      // Update Map Count Badge
+      // Update Map Count Badge and Mobile Toggle Label
+      const countFormatted = filtered.length.toLocaleString();
       const countText = document.getElementById('map-count-text');
       if (countText) {
-        countText.textContent = `${filtered.length.toLocaleString()} campground${filtered.length === 1 ? '' : 's'} on map`;
+        const label = filterType === 'open' ? 'open' : (filterType === 'free' ? 'free' : 'campgrounds');
+        countText.textContent = `${countFormatted} ${label} on map`;
       }
 
-      // Auto-zoom map if a specific search was typed (3+ characters) or requested
+      const mobileDrawerCount = document.getElementById('mobile-drawer-count');
+      if (mobileDrawerCount) mobileDrawerCount.textContent = countFormatted;
+
+      const mobileToggleCount = document.getElementById('mobile-toggle-count');
+      if (mobileToggleCount) mobileToggleCount.textContent = countFormatted;
+
+      // Auto-zoom map if a specific search was typed (3+ characters)
       if (autoZoom && filtered.length > 0) {
         const bounds = filtered.map(c => [c.lat, c.lng]);
         if (bounds.length === 1) {
@@ -343,7 +409,7 @@
       }
     }
 
-    // 4. Render Markers into MarkerClusterGroup
+    // 5. Render Markers into MarkerClusterGroup
     function renderCampgroundMarkers(camps) {
       if (!markersLayer) return;
       markersLayer.clearLayers();
@@ -353,9 +419,11 @@
       camps.forEach(camp => {
         if (!camp.lat || !camp.lng) return;
 
+        const isOpen = camp.is_open;
         const isFree = camp.is_free;
-        const badgeColor = isFree ? '#047857' : '#d97706';
-        const badgeText = isFree ? 'FREE' : (camp.price_badge || '$');
+        
+        let badgeColor = isOpen ? (isFree ? '#047857' : '#d97706') : '#dc2626';
+        let badgeText = !isOpen ? 'CLOSED' : (isFree ? 'FREE' : (camp.price_badge || '$'));
 
         const customIcon = L.divIcon({
           className: 'custom-tent-icon',
@@ -364,10 +432,10 @@
           popupAnchor: [0, -36],
           html: `
             <div style="position: relative; display: flex; flex-direction: column; align-items: center;">
-              <div style="background: ${badgeColor}; color: white; font-size: 10px; font-weight: 800; padding: 1px 5px; border-radius: 9999px; box-shadow: 0 2px 4px rgba(0,0,0,0.25); white-space: nowrap; margin-bottom: 2px;">
+              <div style="background: ${badgeColor}; color: white; font-size: 9px; font-weight: 800; padding: 1px 5px; border-radius: 9999px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); white-space: nowrap; margin-bottom: 2px;">
                 ${badgeText}
               </div>
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="${badgeColor}" stroke="#ffffff" stroke-width="1.5">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="${badgeColor}" stroke="#ffffff" stroke-width="1.5">
                 <path d="M12 2L2 22h20L12 2z"/>
                 <path d="M12 6l-6 16h12L12 6z" fill="#ffffff" fill-opacity="0.3"/>
               </svg>
@@ -376,6 +444,10 @@
         });
 
         const marker = L.marker([camp.lat, camp.lng], { icon: customIcon });
+
+        const statusBadge = isOpen
+          ? `<span style="background: #ecfdf5; color: #047857; font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px;">Open</span>`
+          : `<span style="background: #fef2f2; color: #b91c1c; font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px;">${camp.status}</span>`;
 
         const bookBtn = camp.reservation_url ? `
           <a href="${camp.reservation_url}" target="_blank"
@@ -388,7 +460,7 @@
           <div style="padding: 12px; max-width: 270px; font-family: system-ui, -apple-system, sans-serif;">
             <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px;">
               <strong style="font-size: 14px; color: #111827;">${camp.name}</strong>
-              <span style="background: #ecfdf5; color: #047857; font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px;">${camp.status}</span>
+              ${statusBadge}
             </div>
             <p style="font-size: 11px; color: #6b7280; margin: 0 0 4px 0;">${camp.district || camp.region || 'USFS West'}</p>
             <p style="font-size: 11px; color: #374151; margin: 0 0 8px 0;"><strong>Fee:</strong> ${camp.fee_text}</p>
@@ -413,7 +485,6 @@
         markers.push(marker);
       });
 
-      // Bulk add for maximum performance
       if (markersLayer.addLayers) {
         markersLayer.addLayers(markers);
       } else {
@@ -421,7 +492,7 @@
       }
     }
 
-    // 5. User Geolocation ("Near Me")
+    // 6. User Geolocation ("Near Me")
     function locateUser() {
       const btnText = document.getElementById('locate-text');
       if (!navigator.geolocation) {
@@ -468,10 +539,10 @@
       );
     }
 
-    // 6. Reset Map View
+    // 7. Reset Map View
     function resetMapView() {
       const query = document.getElementById('search-input')?.value || '';
-      const filterType = document.querySelector('input[name="filter"]:checked')?.value || 'all';
+      const filterType = document.querySelector('input[name="filter"]:checked')?.value || 'open';
       const filtered = filterCampgroundsClient(allCampgrounds, filterType, query);
 
       if (filtered.length > 0 && (query || filterType !== 'all')) {
@@ -482,8 +553,13 @@
       }
     }
 
-    // 7. Select Campground from Card
+    // 8. Select Campground from Card
     function selectCampground(lat, lng, name) {
+      // On mobile: immediately hide list drawer so user sees map
+      if (window.innerWidth < 768) {
+        toggleMobileView(false);
+      }
+
       const key = `${lat.toFixed(5)},${lng.toFixed(5)}`;
       const marker = markerMap[key];
       if (marker && markersLayer.zoomToShowLayer) {
@@ -494,14 +570,9 @@
         map.setView([lat, lng], 14, { animate: true });
         if (marker) marker.openPopup();
       }
-
-      if (window.innerWidth < 768) {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-      }
     }
 
-    // 8. Event Listeners for Dynamic Filter & Search Sync
-    // Filter radio pill changes
+    // 9. Event Listeners for Dynamic Filter & Search Sync
     document.getElementById('filter-form').addEventListener('change', () => {
       applyFilters(false);
     });
@@ -510,7 +581,6 @@
       input.addEventListener('change', () => applyFilters(false));
     });
 
-    // Search input changes (debounced with auto-zoom on 3+ characters)
     document.getElementById('search-input').addEventListener('input', (e) => {
       document.getElementById('sync-search-q').value = e.target.value;
       clearTimeout(filterDebounceTimer);
@@ -520,7 +590,7 @@
       }, 200);
     });
 
-    // 9. PWA Service Worker Registration
+    // 10. PWA Service Worker Registration
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('/sw.js')
@@ -529,7 +599,7 @@
       });
     }
 
-    // 10. PWA Install Banner Support
+    // 11. PWA Install Banner Support
     let deferredPrompt;
     const installBtn = document.getElementById('pwa-install-btn');
 
@@ -553,7 +623,6 @@
       console.log('CampFinder PWA was installed');
     });
 
-    // Run on startup
     window.addEventListener('DOMContentLoaded', initMap);
   </script>
 </body>

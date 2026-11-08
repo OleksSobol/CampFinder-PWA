@@ -39,7 +39,7 @@ def haversine_distance_miles(lat1: float, lon1: float, lat2: float, lon2: float)
 def filter_and_sort_campgrounds(
     campgrounds: list[dict],
     q: Optional[str] = None,
-    filter_type: Optional[str] = "all",
+    filter_type: Optional[str] = "open",
     user_lat: Optional[float] = None,
     user_lng: Optional[float] = None,
 ) -> tuple[list[dict], int]:
@@ -56,11 +56,14 @@ def filter_and_sort_campgrounds(
             if query_lower not in search_str:
                 continue
 
-        # 2. Type / Price Filter
+        # 2. Type / Status / Price Filter
         is_free = camp.get("is_free", False)
+        is_open = camp.get("is_open", True)
         price_badge = camp.get("price_badge", "")
 
-        if filter_type == "free" and not is_free:
+        if filter_type == "open" and not is_open:
+            continue
+        elif filter_type == "free" and not is_free:
             continue
         elif filter_type == "paid" and is_free:
             continue
@@ -94,10 +97,9 @@ def filter_and_sort_campgrounds(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Ensure full data exists on startup (auto-seed or scan if under 1,000)
     data = scraper.get_cached_data()
     if not data.get("campgrounds") or data.get("total_count", 0) < 1000:
-        logger.info("Fewer than 1,000 campgrounds found on startup. Triggering full US West scan...")
+        logger.info("Fewer than 1,000 campgrounds found on startup. Seeding US West live dataset...")
         try:
             scraper.scrape_all_campgrounds()
         except Exception as e:
@@ -136,6 +138,7 @@ async def health_check():
     return {
         "status": "healthy",
         "total_campgrounds": data.get("total_count", 0),
+        "open_count": data.get("open_count", 0),
         "updated_at": data.get("updated_at"),
     }
 
@@ -161,6 +164,7 @@ async def index_page(request: Request):
             "lat": c.get("lat"),
             "lng": c.get("lng"),
             "status": c.get("status", "Open"),
+            "is_open": c.get("is_open", True),
             "is_free": c.get("is_free", False),
             "price_badge": c.get("price_badge", "Free"),
             "district": c.get("district", ""),
@@ -173,21 +177,29 @@ async def index_page(request: Request):
         for c in all_campgrounds
     ]
 
-    # Initial top 100 cards for fast DOM rendering
+    # Initial top 100 open cards for fast DOM rendering
+    filtered_initial, total_initial = filter_and_sort_campgrounds(
+        campgrounds=all_campgrounds,
+        filter_type="open",
+    )
+
     top_cards = []
-    for c in all_campgrounds[:100]:
+    for c in filtered_initial[:100]:
         c_copy = dict(c)
         c_copy["distance_miles"] = None
         top_cards.append(c_copy)
+
+    total_count = data.get("total_count", len(all_campgrounds))
+    open_count = data.get("open_count", sum(1 for c in all_campgrounds if c.get("is_open")))
 
     return templates.TemplateResponse(
         request=request,
         name="index.html",
         context={
             "campgrounds": top_cards,
-            "total_matches": len(all_campgrounds),
-            "total_count": data.get("total_count", len(all_campgrounds)),
-            "open_count": data.get("open_count", 0),
+            "total_matches": total_initial,
+            "total_count": total_count,
+            "open_count": open_count,
             "map_campgrounds": map_campgrounds,
             "updated_at": data.get("updated_at"),
             "user_loc": False,
@@ -200,7 +212,7 @@ async def index_page(request: Request):
 async def list_campgrounds(
     request: Request,
     q: Optional[str] = Query(None),
-    filter: Optional[str] = Query("all"),
+    filter: Optional[str] = Query("open"),
     lat: Optional[str] = Query(None),
     lng: Optional[str] = Query(None),
 ):
@@ -218,7 +230,6 @@ async def list_campgrounds(
         user_lng=user_lng,
     )
 
-    # Return top 100 matches to keep client-side rendering snappy
     visible_cards = filtered[:100]
 
     return templates.TemplateResponse(
@@ -235,7 +246,7 @@ async def list_campgrounds(
 # HTMX Trigger: On-Demand Refresh Scrape
 @app.post("/refresh", response_class=HTMLResponse)
 async def refresh_campgrounds():
-    logger.info("Executing on-demand scan of US West campgrounds...")
+    logger.info("Executing on-demand scan of live US West campgrounds...")
     try:
         campgrounds = scraper.scrape_all_campgrounds()
         count = len(campgrounds)

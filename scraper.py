@@ -15,19 +15,10 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DATA_FILE = os.path.join(DATA_DIR, "campgrounds.json")
 SEED_FILE = os.path.join(os.path.dirname(__file__), "campgrounds_seed.json")
 
-# Authoritative USDA Forest Service Enterprise Data Warehouse (EDW) REST endpoint
+# Authoritative USDA Forest Service Recreation Opportunities REST endpoint (powers live fs.usda.gov recreation pages)
 ARCGIS_ENDPOINT = (
-    "https://apps.fs.usda.gov/arcx/rest/services/EDW/EDW_InfraRecreationSites_01/MapServer/0/query"
+    "https://apps.fs.usda.gov/arcx/rest/services/EDW/EDW_RecreationOpportunities_01/MapServer/0/query"
 )
-
-# USFS Regions covering the entire US West:
-# 01: Northern (Montana, northern Idaho)
-# 02: Rocky Mountain (Colorado, Wyoming, South Dakota, Nebraska)
-# 03: Southwestern (Arizona, New Mexico)
-# 04: Intermountain (Idaho, Nevada, Utah, western Wyoming)
-# 05: Pacific Southwest (California, Hawaii)
-# 06: Pacific Northwest (Washington, Oregon)
-WESTERN_REGIONS = ("01", "02", "03", "04", "05", "06")
 
 REGION_NAMES = {
     "01": "Northern (MT/ID)",
@@ -39,26 +30,70 @@ REGION_NAMES = {
 }
 
 
-def parse_price(fee_text: str, fee_charged: str = "N") -> tuple[bool, str]:
-    """Determine if a campsite is free or paid, and extract readable price."""
+def parse_price(fee_text: str, name: str = "") -> tuple[bool, str]:
+    """Accurately extract price, preventing false 'Free' flags from 'download free app' text."""
+    lower_name = name.lower()
+    if not fee_text or not fee_text.strip():
+        if "dispersed" in lower_name:
+            return True, "Free"
+        if any(w in lower_name for w in ["cabin", "lookout", "group", "resort"]):
+            return False, "Reservable"
+        return False, "See USFS"
+
     lower = fee_text.lower()
-    if fee_charged == "N" or "no fee" in lower or "no fees" in lower or "free" in lower:
+
+    # 1. Search for explicit site/nightly price patterns
+    site_match = re.search(
+        r"\$(\d+(?:\.\d{2})?)\s*(?:for\s*(?:campsite|site|camping)|per\s*night|/\s*night|nightly)",
+        lower,
+    )
+    if site_match:
+        val = int(float(site_match.group(1)))
+        return False, f"${val}/night"
+
+    label_match = re.search(
+        r"(?:single site|overnight|standard|campsite|site)[:\s]*\$(\d+(?:\.\d{2})?)",
+        lower,
+    )
+    if label_match:
+        val = int(float(label_match.group(1)))
+        return False, f"${val}/night"
+
+    # Any other explicit dollar amount in fee text
+    dollar_match = re.search(r"\$(\d+(?:\.\d{2})?)", fee_text)
+    if dollar_match:
+        val = int(float(dollar_match.group(1)))
+        return False, f"${val}/night"
+
+    # 2. Check for explicit free phrases (stripping promotional app mentions)
+    clean = re.sub(r"free\s+(?:recreation\.gov|mobile)?\s*app", "", lower)
+    clean = re.sub(r"toll[-\s]?free", "", clean)
+
+    if any(
+        phrase in clean
+        for phrase in [
+            "no fee",
+            "no fees",
+            "no charge",
+            "free camping",
+            "camping is free",
+            "free of charge",
+            "free site",
+        ]
+    ):
         return True, "Free"
 
-    prices = re.findall(r"\$(\d+(?:\.\d{2})?)", fee_text)
-    if prices:
-        val = float(prices[0])
-        val_str = f"${int(val)}" if val.is_integer() else f"${val:.2f}"
-        return False, f"{val_str}/night"
+    if re.search(r"\bfree\b", clean):
+        return True, "Free"
 
-    if "day use fee" in lower or "pass" in lower:
+    if "pass" in clean:
         return False, "Pass/Fee"
 
     return False, "Fee Req."
 
 
 def format_camp_name(raw_name: str) -> str:
-    """Format ALL-CAPS names to clean Title Case while preserving standard abbreviations."""
+    """Format ALL-CAPS names to clean Title Case."""
     if not raw_name:
         return "Campground"
     name = raw_name.strip()
@@ -70,31 +105,32 @@ def format_camp_name(raw_name: str) -> str:
 
 
 def fetch_all_western_campgrounds() -> list[dict]:
-    """Fetch all campgrounds across USFS Regions 1-6 using the official EDW ArcGIS REST API."""
-    regions_str = ",".join(f"'{r}'" for r in WESTERN_REGIONS)
-    where_clause = f"site_subtype = 'CAMPGROUND' AND region IN ({regions_str})"
+    """Fetch live recreation camping areas across USFS Western Regions (1-6)."""
+    where_clause = (
+        "markeractivitygroup = 'Camping & Cabins' AND ("
+        "forestorgcode LIKE '01%' OR forestorgcode LIKE '02%' OR forestorgcode LIKE '03%' OR "
+        "forestorgcode LIKE '04%' OR forestorgcode LIKE '05%' OR forestorgcode LIKE '06%')"
+    )
 
     out_fields = (
-        "site_name,public_site_name,recarea_name,parent_recarea,closest_towns,region,managing_org,fee_charged,"
-        "fee_description,recarea_status,restrictions,minimum_elevation,usda_portal_url,"
-        "rec1stop_url,latitude,longitude"
+        "recareaname,longitude,latitude,recareaurl,forestname,forestorgcode,feedescription,"
+        "operational_hours,openstatus,reservation_info,restrictions,markeractivity"
     )
 
     all_features = []
     offset = 0
     batch_size = 2000
 
-    logger.info(f"Initiating full US West USFS campground scan (Regions: {', '.join(WESTERN_REGIONS)})...")
+    logger.info("Initiating full US West USFS live recreation scan (Regions 1-6)...")
 
     while True:
         params = urllib.parse.urlencode({
             "where": where_clause,
             "outFields": out_fields,
-            "returnGeometry": "true",
-            "outSR": "4326",
+            "returnGeometry": "false",
             "resultOffset": offset,
             "resultRecordCount": batch_size,
-            "f": "geojson",
+            "f": "json",
         })
         url = f"{ARCGIS_ENDPOINT}?{params}"
         req = urllib.request.Request(
@@ -104,7 +140,7 @@ def fetch_all_western_campgrounds() -> list[dict]:
             },
         )
 
-        logger.info(f"Querying ArcGIS EDW batch: offset={offset}, limit={batch_size}...")
+        logger.info(f"Querying live recreation batch: offset={offset}, limit={batch_size}...")
         try:
             with urllib.request.urlopen(req, timeout=30) as res:
                 payload = json.loads(res.read().decode("utf-8"))
@@ -124,60 +160,85 @@ def fetch_all_western_campgrounds() -> list[dict]:
         offset += batch_size
         time.sleep(0.3)
 
-    logger.info(f"Transforming {len(all_features)} USFS campgrounds into CampFinder format...")
+    logger.info(f"Transforming {len(all_features)} live USFS camping sites into CampFinder format...")
 
     results = []
     seen_coords = set()
 
     for f in all_features:
-        props = f.get("properties", {})
-        geom = f.get("geometry", {})
-        coords = geom.get("coordinates") if geom else None
-
-        lat = coords[1] if (coords and len(coords) >= 2) else props.get("latitude")
-        lng = coords[0] if (coords and len(coords) >= 2) else props.get("longitude")
+        a = f.get("attributes", {})
+        try:
+            lat = float(a.get("latitude"))
+            lng = float(a.get("longitude"))
+        except (TypeError, ValueError):
+            continue
 
         if not lat or not lng:
             continue
 
-        # Prevent exact duplicate coordinate stacking
         coord_key = (round(lat, 5), round(lng, 5))
         if coord_key in seen_coords:
             continue
         seen_coords.add(coord_key)
 
-        raw_name = props.get("public_site_name") or props.get("site_name") or "Campground"
+        raw_name = a.get("recareaname") or "Campground"
         name = format_camp_name(raw_name)
 
-        fee_text = props.get("fee_description") or ""
-        fee_charged = props.get("fee_charged") or ("Y" if fee_text else "N")
-        is_free, price_badge = parse_price(fee_text, fee_charged=fee_charged)
+        # Real live status from USFS web portal
+        status_raw = (a.get("openstatus") or "").lower().strip()
+        hours_raw = (a.get("operational_hours") or "").lower().strip()
 
-        rec_status = (props.get("recarea_status") or "").upper()
-        is_open = rec_status not in ("CLOSED", "TEMPORARILY CLOSED")
-        status = "Closed" if not is_open else "Open"
+        if status_raw in ("closed", "unreachable") or "closed" in hours_raw:
+            is_open = False
+            status = "Closed"
+        elif status_raw == "temporarily closed":
+            is_open = False
+            status = "Temporarily Closed"
+        elif status_raw == "open":
+            is_open = True
+            status = "Open"
+        else:
+            if "closed" in hours_raw:
+                is_open = False
+                status = "Closed"
+            else:
+                is_open = True
+                status = "Open"
 
-        recarea = props.get("parent_recarea") or props.get("recarea_name")
-        town = props.get("closest_towns") or ""
-        reg_id = props.get("region")
+        # Fee text parsing
+        fee_raw = a.get("feedescription") or ""
+        fee_clean = re.sub(r"<[^>]+>", " ", fee_raw)
+        fee_clean = re.sub(r"&nbsp;", " ", fee_clean)
+        fee_clean = re.sub(r"&amp;", "&", fee_clean)
+        fee_clean = " ".join(fee_clean.split())
 
-        district_parts = []
-        if recarea:
-            clean_rec = recarea.title() if recarea.isupper() else recarea
-            district_parts.append(clean_rec)
-        if town:
-            clean_town = re.sub(r"\s+", " ", town).strip("., ")
-            district_parts.append(clean_town)
+        is_free, price_badge = parse_price(fee_clean, name=name)
 
-        district = " • ".join(district_parts) if district_parts else REGION_NAMES.get(reg_id, "USFS West")
+        forest = a.get("forestname") or "National Forest"
+        org_code = (a.get("forestorgcode") or "")[:2]
+        region = REGION_NAMES.get(org_code, "USFS West")
 
-        usda_url = props.get("usda_portal_url")
+        # Reservation Link
+        reservation_url = None
+        for txt in [
+            a.get("reservation_info") or "",
+            a.get("feedescription") or "",
+            a.get("restrictions") or "",
+        ]:
+            rec_match = re.search(r"https?://(?:www\.)?recreation\.gov/[^\s\"'<>)]+", txt)
+            if rec_match:
+                reservation_url = rec_match.group(0)
+                break
+
+        usda_url = a.get("recareaurl")
         if not usda_url:
             usda_url = f"https://www.google.com/search?q={urllib.parse.quote(name + ' campground usda forest service')}"
 
         cid = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
         if not cid:
             cid = f"cg-{round(lat, 4)}-{round(lng, 4)}"
+
+        display_fee = fee_clean if fee_clean else ("No fees required" if is_free else "Check USFS portal for rates")
 
         results.append({
             "id": cid,
@@ -188,18 +249,19 @@ def fetch_all_western_campgrounds() -> list[dict]:
             "status": status,
             "lat": round(lat, 6),
             "lng": round(lng, 6),
-            "fee_text": fee_text.strip() if fee_text else ("No fees required" if is_free else "Fee information on site"),
+            "fee_text": display_fee[:250],
             "is_free": is_free,
             "price_badge": price_badge,
-            "district": district,
-            "town": town,
-            "region": REGION_NAMES.get(reg_id, "USFS West"),
-            "stay_limit": props.get("restrictions"),
-            "elevation": props.get("minimum_elevation"),
-            "reservation_url": props.get("rec1stop_url"),
+            "district": forest,
+            "town": forest,
+            "region": region,
+            "stay_limit": a.get("restrictions"),
+            "elevation": None,
+            "reservation_url": reservation_url,
+            "activity": a.get("markeractivity") or "Camping",
         })
 
-    logger.info(f"Processed {len(results)} valid Western US campgrounds.")
+    logger.info(f"Processed {len(results)} valid live Western US campgrounds.")
     return results
 
 
@@ -214,7 +276,6 @@ def save_campgrounds(campgrounds: list[dict]):
     }
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
-    # Also save to seed file so container builds always have current seed
     try:
         with open(SEED_FILE, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
@@ -248,7 +309,9 @@ def get_cached_data() -> dict:
                 with open(SEED_FILE, "r", encoding="utf-8") as f:
                     seed_data = json.load(f)
                 if seed_data.get("total_count", 0) >= 1000:
-                    logger.info(f"Overwriting stale volume cache with {seed_data.get('total_count')} seed campgrounds...")
+                    logger.info(
+                        f"Overwriting stale volume cache with {seed_data.get('total_count')} seed campgrounds..."
+                    )
                     os.makedirs(DATA_DIR, exist_ok=True)
                     with open(DATA_FILE, "w", encoding="utf-8") as f:
                         json.dump(seed_data, f, indent=2)
