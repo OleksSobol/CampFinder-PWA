@@ -4,6 +4,7 @@ A lightweight, PWA to discover all open campgrounds in the **Okanogan-Wenatchee 
 
 Built with **Python (FastAPI) + HTMX + Jinja2 + Leaflet.js + Tailwind CSS** — zero complex build steps, no TypeScript compiler, and packaged cleanly for one-click deployment in **Coolify** and access via  (`camp.lab.osobol.com`).
 
+Live version: [Here](camp.lab.osobol.com)
 ---
 
 ## ✨ Features
