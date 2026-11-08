@@ -232,6 +232,12 @@
               </span>
             </label>
             <label class="cursor-pointer shrink-0">
+              <input type="radio" name="filter" value="closed" class="peer hidden">
+              <span class="px-3 py-1.5 rounded-lg border border-slate-200 peer-checked:bg-rose-700 peer-checked:text-white peer-checked:border-rose-700 text-gray-600 hover:bg-slate-100 transition-colors">
+                🔴 Closed ({{ closed_count }})
+              </span>
+            </label>
+            <label class="cursor-pointer shrink-0">
               <input type="radio" name="filter" value="all" class="peer hidden">
               <span class="px-3 py-1.5 rounded-lg border border-slate-200 peer-checked:bg-emerald-800 peer-checked:text-white peer-checked:border-emerald-800 text-gray-600 hover:bg-slate-100 transition-colors">
                 All ({{ total_count }})
@@ -360,6 +366,8 @@
       // Status / Price / Type Filter
       if (filterType === 'open') {
         filtered = filtered.filter(c => c.is_open);
+      } else if (filterType === 'closed') {
+        filtered = filtered.filter(c => !c.is_open);
       } else if (filterType === 'free') {
         filtered = filtered.filter(c => c.is_free);
       } else if (filterType === 'paid') {
@@ -388,7 +396,7 @@
       const countFormatted = filtered.length.toLocaleString();
       const countText = document.getElementById('map-count-text');
       if (countText) {
-        const label = filterType === 'open' ? 'open' : (filterType === 'free' ? 'free' : 'campgrounds');
+        const label = filterType === 'open' ? 'open' : (filterType === 'closed' ? 'closed' : (filterType === 'free' ? 'free' : 'campgrounds'));
         countText.textContent = `${countFormatted} ${label} on map`;
       }
 

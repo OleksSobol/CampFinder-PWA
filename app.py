@@ -63,6 +63,8 @@ def filter_and_sort_campgrounds(
 
         if filter_type == "open" and not is_open:
             continue
+        elif filter_type == "closed" and is_open:
+            continue
         elif filter_type == "free" and not is_free:
             continue
         elif filter_type == "paid" and is_free:
@@ -191,6 +193,7 @@ async def index_page(request: Request):
 
     total_count = data.get("total_count", len(all_campgrounds))
     open_count = data.get("open_count", sum(1 for c in all_campgrounds if c.get("is_open")))
+    closed_count = total_count - open_count
 
     return templates.TemplateResponse(
         request=request,
@@ -200,6 +203,7 @@ async def index_page(request: Request):
             "total_matches": total_initial,
             "total_count": total_count,
             "open_count": open_count,
+            "closed_count": closed_count,
             "map_campgrounds": map_campgrounds,
             "updated_at": data.get("updated_at"),
             "user_loc": False,
