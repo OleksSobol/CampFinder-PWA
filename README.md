@@ -1,8 +1,8 @@
 # 🌲 CampFinder PWA
 
-A lightweight, mobile-first Progressive Web App (PWA) to discover all open campgrounds in the **Okanogan-Wenatchee National Forest** (extensible to any USFS region), with live pricing badges, GPS-based "Near Me" distance sorting, and an interactive Leaflet map.
+A lightweight, PWA to discover all open campgrounds in the **Okanogan-Wenatchee National Forest** (extensible to any USFS region), with live pricing badges, GPS-based "Near Me" distance sorting, and an interactive Leaflet map.
 
-Built with **Python (FastAPI) + HTMX + Jinja2 + Leaflet.js + Tailwind CSS** — zero complex build steps, no TypeScript compiler, and packaged cleanly for one-click deployment in **Coolify** and access via **Cloudflare** (`camp.lab.osobol.com`).
+Built with **Python (FastAPI) + HTMX + Jinja2 + Leaflet.js + Tailwind CSS** — zero complex build steps, no TypeScript compiler, and packaged cleanly for one-click deployment in **Coolify** and access via  (`camp.lab.osobol.com`).
 
 ---
 
